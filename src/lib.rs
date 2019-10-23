@@ -2,6 +2,7 @@
 
 use core::convert::TryInto;
 
+/// MIDI reading errors
 #[derive(Debug)]
 pub enum Error {
     HeaderType,
@@ -9,9 +10,12 @@ pub enum Error {
     HeaderFormat,
     HeaderTracks,
     HeaderDivision,
+    TrackType,
+    TrackLength,
+    TrackData,
 }
 
-/// The MIDI file format
+/// MIDI file format
 #[derive(Debug)]
 pub enum Format {
     Single,
@@ -19,8 +23,13 @@ pub enum Format {
     MultiSequence,
 }
 
-pub struct Track;
+/// MIDI track chunk
+pub struct Track<'a> {
+    data: &'a [u8],
+}
 
+/// Iterator over MIDI track chunks
+#[derive(Debug, Clone)]
 pub struct Tracks<'a> {
     /// Pointer to the underlying unread midi data
     midi: &'a [u8],
@@ -31,13 +40,49 @@ pub struct Tracks<'a> {
 }
 
 impl<'a> Iterator for Tracks<'a> {
-    type Item = Result<Track, Error>;
+    type Item = Result<Track<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        unimplemented!()
+        // reads next track and returns it together with number of bytes read
+        fn next_track(midi: &[u8]) -> Result<(Track, usize), Error> {
+            // validate track type
+            if !midi.starts_with(b"MTrk") {
+                return Err(Error::TrackType)
+            }
+
+            // read track len
+            let data_len = read_u32(&midi[4..])
+                .ok_or_else(|| Error::TrackLength)?;
+
+            // read data
+            let data = read(&midi[8..], data_len as usize)
+                .ok_or_else(|| Error::TrackData)?;
+
+            let track = Track {
+                data,
+            };
+
+            Ok((track, 8 + data.len()))
+        }
+
+        // exit if none more tracks are expected
+        if self.tracks_read == self.tracks_expected {
+            return None;
+        }
+
+        let (track, bytes_read) = match next_track(self.midi) {
+            Ok(tuple) => tuple,
+            Err(err) => return Some(Err(err)),
+        };
+
+        self.midi = &self.midi[bytes_read..];
+        self.tracks_read += 1;
+
+        Some(Ok(track))
     }
 }
 
+/// Lazy MIDI reader
 pub struct MidiReader<'a> {
     pub format: Format,
     pub tracks: Tracks<'a>,
@@ -45,29 +90,30 @@ pub struct MidiReader<'a> {
 }
 
 /// Safely reads bytes from the slice
-fn read(bytes: &[u8], pos: usize, len: usize) -> Option<&[u8]> {
-    if pos + len > bytes.len() {
+fn read(bytes: &[u8], len: usize) -> Option<&[u8]> {
+    if len > bytes.len() {
         return None
     }
 
-    Some(&bytes[pos..pos + len])
+    Some(&bytes[..len])
 }
 
 /// Safely reads u16 from the slice
-fn read_u16(bytes: &[u8], pos: usize) -> Option<u16> {
-    read(bytes, pos, 2)
+fn read_u16(bytes: &[u8]) -> Option<u16> {
+    read(bytes, 2)
         .and_then(|data| data.try_into().ok())
         .map(|data| u16::from_le_bytes(data))
 }
 
 /// Safely reads u32 from the slice
-fn read_u32(bytes: &[u8], pos: usize) -> Option<u32> {
-    read(bytes, pos, 4)
+fn read_u32(bytes: &[u8]) -> Option<u32> {
+    read(bytes, 4)
         .and_then(|data| data.try_into().ok())
         .map(|data| u32::from_le_bytes(data))
 }
 
 impl<'a> MidiReader<'a> {
+    /// Creates new lazy MIDI reader
     pub fn new(midi: &'a [u8]) -> Result<Self, Error> {
         // validate header type
         if !midi.starts_with(b"MThd") {
@@ -75,12 +121,12 @@ impl<'a> MidiReader<'a> {
         }
 
         // validate header length
-        let _ = read_u32(midi, 4)
+        let _ = read_u32(&midi[4..])
             .filter(|length| *length == 6)
             .ok_or_else(|| Error::HeaderLength)?;
 
         // read format
-        let format = read_u16(midi, 8)
+        let format = read_u16(&midi[8..])
             .and_then(|format| match format {
                 0 => Some(Format::Single),
                 1 => Some(Format::MultiTrack),
@@ -90,8 +136,8 @@ impl<'a> MidiReader<'a> {
             .ok_or_else(|| Error::HeaderFormat)?;
 
         // read tracks
-        let tracks = read_u16(midi, 10).ok_or_else(|| Error::HeaderTracks)?;
-        let division = read_u16(midi, 12).ok_or_else(|| Error::HeaderDivision)?;
+        let tracks = read_u16(&midi[10..]).ok_or_else(|| Error::HeaderTracks)?;
+        let division = read_u16(&midi[12..]).ok_or_else(|| Error::HeaderDivision)?;
 
 
         let midi_reader = MidiReader {
