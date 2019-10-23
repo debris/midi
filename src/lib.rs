@@ -56,13 +56,15 @@ fn read(bytes: &[u8], pos: usize, len: usize) -> Option<&[u8]> {
 /// Safely reads u16 from the slice
 fn read_u16(bytes: &[u8], pos: usize) -> Option<u16> {
     read(bytes, pos, 2)
-        .map(|data| u16::from_le_bytes(data.try_into().unwrap()))
+        .and_then(|data| data.try_into().ok())
+        .map(|data| u16::from_le_bytes(data))
 }
 
 /// Safely reads u32 from the slice
 fn read_u32(bytes: &[u8], pos: usize) -> Option<u32> {
     read(bytes, pos, 4)
-        .map(|data| u32::from_le_bytes(data.try_into().unwrap()))
+        .and_then(|data| data.try_into().ok())
+        .map(|data| u32::from_le_bytes(data))
 }
 
 impl<'a> MidiReader<'a> {
