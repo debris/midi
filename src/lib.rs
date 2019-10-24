@@ -13,6 +13,7 @@ pub enum Error {
     TrackType,
     TrackLength,
     TrackData,
+    EventTime,
 }
 
 /// MIDI file format
@@ -23,9 +24,45 @@ pub enum Format {
     MultiSequence,
 }
 
+#[derive(Debug)]
+pub struct Event {
+    pub delta_time: u32,
+}
+
 /// MIDI track chunk
 pub struct Track<'a> {
     data: &'a [u8],
+}
+
+impl<'a> Iterator for Track<'a> {
+    type Item = Result<Event, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        fn next_event(data: &[u8]) -> Result<(Event, usize), Error> {
+            let (delta_time, bytes_read) = read_vlq(data)
+                .ok_or_else(|| Error::EventTime)?;
+
+            let event = Event {
+                delta_time,
+            };
+
+            // TODO: parse events
+
+            Ok((event, bytes_read))
+        }
+
+        if self.data.is_empty() {
+            return None
+        }
+
+        let (event, bytes_read) = match next_event(self.data) {
+            Ok(tuple) => tuple,
+            Err(err) => return Some(Err(err)),
+        };
+
+        self.data = &self.data[bytes_read..];
+        Some(Ok(event))
+    }
 }
 
 /// Iterator over MIDI track chunks
@@ -112,6 +149,26 @@ fn read_u32(bytes: &[u8]) -> Option<u32> {
         .map(|data| u32::from_le_bytes(data))
 }
 
+/// Safely read variable-length quantity and returns it together with it's length in bytes
+fn read_vlq(bytes: &[u8]) -> Option<(u32, usize)> {
+    let mut result: u32 = 0;
+    let mut size: usize = 0;
+    while {
+        // vlq must fit into 32 bit integer
+        if size > 3 {
+            return None;
+        }
+
+        let byte = read(&bytes[size..], 1)?[0];
+        size += 1;
+        result |= (byte & 0b0111_1111) as u32;
+        (byte & 0b1000_0000) != 0
+    } {
+        result <<= 7;
+    }
+    Some((u32::from_le(result), size))
+}
+
 impl<'a> MidiReader<'a> {
     /// Creates new lazy MIDI reader
     pub fn new(midi: &'a [u8]) -> Result<Self, Error> {
@@ -151,5 +208,21 @@ impl<'a> MidiReader<'a> {
         };
 
         Ok(midi_reader)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::read_vlq;
+
+    #[test]
+    fn test_read_vlq() {
+        assert_eq!(Some((0, 1)), read_vlq(&[0]));
+        assert_eq!(Some((1, 1)), read_vlq(&[1]));
+        assert_eq!(Some((0x7f, 1)), read_vlq(&[0x7f]));
+        assert_eq!(Some((0x80, 2)), read_vlq(&[0x81, 0x00]));
+        assert_eq!(Some((0x3fff, 2)), read_vlq(&[0xff, 0x7f]));
+        assert_eq!(Some((0x3e8, 2)), read_vlq(&[0x87, 0x68]));
+        assert_eq!(Some((0xf4240, 3)), read_vlq(&[0xbd, 0x84, 0x40]));
     }
 }
