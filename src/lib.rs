@@ -1,6 +1,11 @@
 //! Documentation http://www.ccarh.org/courses/253/handout/smf/
 
 use futures::io::{self, AsyncRead, AsyncReadExt, Take};
+use futures::stream::{Stream, self, StreamExt};
+use futures::task::{Context, Poll};
+use futures::{Future, FutureExt, ready, TryFuture, TryFutureExt};
+use pin_utils::{unsafe_pinned, unsafe_unpinned};
+use std::pin::Pin;
 use std::convert::TryInto;
 
 /// MIDI reading errors
@@ -52,9 +57,72 @@ pub struct Chunk<TRead> {
     events: TRead,
 }
 
-pub async fn read_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<(u32, Event), Error> {
+impl<TRead: AsyncRead + Unpin> Chunk<TRead> {
+    pub fn events<'a>(&'a mut self) -> impl Stream<Item = Result<(u32, Event), Error>> + 'a {
+        repeat_until_end(self, |s| read_event(&mut s.events).map(|e| e.transpose()).boxed_local())
+    }
+}
+
+pub fn repeat_until_end<TArg, TVal, TFut, TFun>(arg: TArg, f: TFun) -> RepeatUntilEnd<TArg, TFut, TFun> 
+where 
+    TFut: Future<Output = Option<TVal>>,
+    TFun: FnMut(TArg) -> TFut,
+{
+    RepeatUntilEnd {
+        arg: Some(arg),
+        next_future: None,
+        f,
+    }
+}
+
+pub struct RepeatUntilEnd<TArg, TFut, TFun> {
+    arg: Option<TArg>,
+    next_future: Option<TFut>,
+    f: TFun,
+}
+
+
+impl<TArg, TVal, TFut, TFun> RepeatUntilEnd<TArg, TFut, TFun> 
+where 
+    TFut: Future<Output = Option<TVal>>,
+    TFun: FnMut(TArg) -> TFut,
+{
+    unsafe_unpinned!(arg: Option<TArg>);
+    unsafe_pinned!(next_future: Option<TFut>);
+    unsafe_unpinned!(f: TFun);
+}
+
+impl<TArg, TVal, TFut, TFun> Stream for RepeatUntilEnd<TArg, TFut, TFun> 
+where 
+    TFut: Future<Output = Option<TVal>> + Unpin,
+    TFun: FnMut(TArg) -> TFut,
+{
+    type Item = TVal;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        let result = loop {
+            if let Some(next_future) = self.as_mut().next_future().as_pin_mut().take() {
+                break ready!(next_future.poll(cx));
+            };
+
+            let arg = self.as_mut().arg().take().unwrap();
+            let next_future = (self.as_mut().f())(arg);
+            self.as_mut().next_future().set(Some(next_future));
+        };
+
+        Poll::Ready(result)
+    }
+}
+
+async fn read_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Option<(u32, Event)>, Error> {
     // read time since previous event
-    let time = read_vlq(&mut io).await.map_err(|_| Error::EventTime)?;
+    let time = match read_vlq(&mut io).await {
+        Ok(time) => time,
+        Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+            return Ok(None)
+        },
+        Err(_) => return Err(Error::EventData),
+    };
+
     // read event type
     let event_type = read_byte(&mut io).await.map_err(|_| Error::EventData)?;
 
@@ -71,7 +139,7 @@ pub async fn read_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<(u32,
     };
 
     // TODO: read the rest of the event
-    Ok((time, event))
+    Ok(Some((time, event)))
 }
 
 pub async fn read_chunk<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Chunk<Take<TRead>>, Error> {
