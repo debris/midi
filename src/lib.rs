@@ -6,7 +6,7 @@
 //! let header = midi::read_header(io).await?;
 //! for _ in 0 .. header.tracks {
 //!     let mut chunk = midi::read_chunk(io).await?;
-//!     while let Some(_event) = midi::read_event(&mut chunk).await? {
+//!     while let Some((time, event)) = midi::read_event(&mut chunk).await? {
 //!            
 //!     }
 //! }
@@ -63,11 +63,48 @@ pub enum MetaType {
 #[derive(Debug)]
 pub struct MidiEvent;
 
-#[derive(Debug, Default)]
-pub struct MetaEvent;
+#[derive(Debug)]
+pub enum MetaEvent {
+    SequenceNumber(u16),
+    Text(String),
+    CopyrightNotice(String),
+    Name(String),
+    InstrumentName(String),
+    Lyric(String),
+    Marker(String),
+    CuePoint(String),
+    ChannelPrefix(u8),
+    EndOfTrack,
+    SetTempo(u32),
+    SMTPEOffset {
+        hh: u8,
+        mm: u8,
+        ss: u8,
+        fr: u8,
+        ff: u8,
+    },
+    TimeSignature {
+        nn: u8,
+        dd: u8,
+        cc: u8,
+        bb: u8,
+    },
+    KeySignature {
+        sf: u8,
+        mi: u8,
+    },
+    SequencerSpecific(Vec<u8>),
+    Unknown {
+        meta_type: u8,
+        data: Vec<u8>,
+    }
+}
 
 #[derive(Debug)]
-pub struct SysexEvent;
+pub enum SysexEvent {
+    F0(Vec<u8>),
+    F7(Vec<u8>),
+}
 
 #[derive(Debug)]
 pub enum Event {
