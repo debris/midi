@@ -62,7 +62,51 @@ pub enum MetaType {
 }
 
 #[derive(Debug)]
-pub struct MidiEvent;
+pub struct MidiEvent {
+    pub channel: u8,
+    pub kind: MidiEventKind,
+}
+
+#[derive(Debug)]
+pub enum Action {
+    Disconnect,
+    Reconnect,
+}
+
+#[derive(Debug)]
+pub enum MidiEventKind {
+    NoteOff {
+        key: u8,
+        velocity: u8,
+    },
+    NoteOn {
+        key: u8,
+        velocity: u8,
+    },
+    PolyphonicKeyPressure {
+        key: u8,
+        velocity: u8,
+    },
+    ControllerChange {
+        number: u8,
+        value: u8,
+    },
+    ProgramChange(u8),
+    ChannelKeyPressure(u8),
+    PitchBend {
+        lsb: u8,
+        msb: u8,
+    },
+
+    AllSoundOff,
+    ResetAllControllers,
+    LocalControl(Action),
+    AllNotesOff,
+    OmniModeOff,
+    OmniModeOn,
+    MonoModeOn(u8),
+    PolyModeOn,
+}
 
 #[derive(Debug)]
 pub enum MetaEvent<'a> {

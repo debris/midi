@@ -1,7 +1,7 @@
 use std::convert::TryInto;
 use std::borrow::Cow;
 use futures::io::{self, AsyncRead, AsyncReadExt, Take};
-use crate::{Header, Error, Format, Chunk, Event, SysexEvent, MidiEvent, MetaEvent};
+use crate::{Header, Error, Format, Chunk, Event, SysexEvent, MidiEvent, MetaEvent, MidiEventKind, Action};
 
 async fn starts_with<TRead: AsyncRead + Unpin>(mut io: TRead, bytes: &[u8; 4]) -> bool {
     let mut data = [0u8; 4];
@@ -75,6 +75,15 @@ async fn read_text<TRead: AsyncRead + Unpin>(io: TRead) -> Result<String, io::Er
     read_data(io).await.map(|data| String::from_utf8(data).expect("TODO"))
 }
 
+async fn read_action<TRead: AsyncRead + Unpin>(io: TRead) -> Result<Action, io::Error> {
+    let byte = read_byte(io).await?;
+    match byte {
+        0x00 => Ok(Action::Disconnect),
+        0x7f => Ok(Action::Reconnect),
+        _ => Err(io::ErrorKind::InvalidData.into()),
+    }
+}
+
 async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<MetaEvent<'static>, io::Error> {
     let meta_type = read_byte(&mut io).await?;
     let meta_event = match meta_type {
@@ -144,6 +153,74 @@ async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Meta
     };
 
     Ok(meta_event)
+}
+
+// https://www.midi.org/specifications/item/table-1-summary-of-midi-message
+async fn read_midi_event<TRead: AsyncRead + Unpin>(mut io: TRead, status_byte: u8) -> Result<MidiEvent, io::Error> {
+    let channel = status_byte & 0x0f;
+    let status = status_byte & 0xf0;
+    let kind = match status {
+        0x80 => {
+            let key = read_byte(&mut io).await?;
+            let velocity = read_byte(&mut io).await?;
+            MidiEventKind::NoteOff {
+                key, velocity
+            }
+        },
+        0x90 => {
+            let key = read_byte(&mut io).await?;
+            let velocity = read_byte(&mut io).await?;
+            MidiEventKind::NoteOn {
+                key, velocity
+            }
+        },
+        0xa0 => {
+            let key = read_byte(&mut io).await?;
+            let velocity = read_byte(&mut io).await?;
+            MidiEventKind::PolyphonicKeyPressure {
+                key, velocity
+            }
+        },
+        0xb0 => {
+            let number = read_byte(&mut io).await?;
+            match number {
+                0x78 => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::AllSoundOff)?,
+                0x79 => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::ResetAllControllers)?,
+                0x7a => read_action(&mut io).await.map(MidiEventKind::LocalControl)?,
+                0x7b => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::AllNotesOff)?,
+                0x7c => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::OmniModeOff)?,
+                0x7d => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::OmniModeOn)?,
+                0x7e => read_byte(&mut io).await.map(MidiEventKind::MonoModeOn)?,
+                0x7f => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::PolyModeOn)?,
+                _ => {
+                    let value = read_byte(&mut io).await?;
+                    MidiEventKind::ControllerChange {
+                        number, value
+                    }
+                }
+            }
+        },
+        0xc0 => read_byte(&mut io).await.map(MidiEventKind::ProgramChange)?,
+        0xd0 => read_byte(&mut io).await.map(MidiEventKind::ChannelKeyPressure)?,
+        0xe0 => {
+            let lsb = read_byte(&mut io).await?;
+            let msb = read_byte(&mut io).await?;
+            MidiEventKind::PitchBend {
+                lsb, msb
+            }
+        },
+        _ => {
+            unimplemented!();
+        }
+    };
+
+    let midi_event = MidiEvent {
+        channel,
+        kind,
+    };
+
+
+    Ok(midi_event)
 }
 
 pub async fn read_header<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Header, Error> {
@@ -225,7 +302,8 @@ pub async fn read_event<TRead: AsyncRead + Unpin>(chunk: &mut Chunk<TRead>) -> R
             Event::Meta(meta_event)
         },
         _ => {
-            Event::Midi(MidiEvent)
+            let midi_event = read_midi_event(&mut chunk.io, event_type).await.map_err(|_| Error::EventData)?;
+            Event::Midi(midi_event)
         }
     };
 
