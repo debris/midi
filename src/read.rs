@@ -1,4 +1,5 @@
 use std::convert::TryInto;
+use std::borrow::Cow;
 use futures::io::{self, AsyncRead, AsyncReadExt, Take};
 use crate::{Header, Error, Format, Chunk, Event, SysexEvent, MidiEvent, MetaEvent};
 
@@ -74,7 +75,7 @@ async fn read_text<TRead: AsyncRead + Unpin>(io: TRead) -> Result<String, io::Er
     read_data(io).await.map(|data| String::from_utf8(data).expect("TODO"))
 }
 
-async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<MetaEvent, io::Error> {
+async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<MetaEvent<'static>, io::Error> {
     let meta_type = read_byte(&mut io).await?;
     let meta_event = match meta_type {
         0x00 => {
@@ -82,13 +83,13 @@ async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Meta
             let number = read_u16(&mut io).await?;
             MetaEvent::SequenceNumber(number) 
         },
-        0x01 => read_text(&mut io).await.map(MetaEvent::Text)?,
-        0x02 => read_text(&mut io).await.map(MetaEvent::CopyrightNotice)?,
-        0x03 => read_text(&mut io).await.map(MetaEvent::Name)?,
-        0x04 => read_text(&mut io).await.map(MetaEvent::InstrumentName)?,
-        0x05 => read_text(&mut io).await.map(MetaEvent::Lyric)?,
-        0x06 => read_text(&mut io).await.map(MetaEvent::Marker)?,
-        0x07 => read_text(&mut io).await.map(MetaEvent::CuePoint)?,
+        0x01 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Text)?,
+        0x02 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::CopyrightNotice)?,
+        0x03 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Name)?,
+        0x04 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::InstrumentName)?,
+        0x05 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Lyric)?,
+        0x06 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Marker)?,
+        0x07 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::CuePoint)?,
         0x20 => {
             assert_byte(&mut io, 1).await?;
             let channel = read_byte(&mut io).await?;
@@ -132,12 +133,12 @@ async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Meta
                 sf, mi
             }
         },
-        0x7f => read_data(&mut io).await.map(MetaEvent::SequencerSpecific)?,
+        0x7f => read_data(&mut io).await.map(Cow::Owned).map(MetaEvent::SequencerSpecific)?,
         _ => {
             let data = read_data(&mut io).await?;
             MetaEvent::Unknown {
                 meta_type,
-                data,
+                data: Cow::Owned(data),
             }
         }
     };
@@ -195,7 +196,7 @@ pub async fn read_chunk<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Chunk
     Ok(chunk)
 }
 
-pub async fn read_event<TRead: AsyncRead + Unpin>(chunk: &mut Chunk<TRead>) -> Result<Option<(u32, Event)>, Error> {
+pub async fn read_event<TRead: AsyncRead + Unpin>(chunk: &mut Chunk<TRead>) -> Result<Option<(u32, Event<'static>)>, Error> {
     // read time since previous event
     let time = match read_vlq(&mut chunk.io).await {
         Ok(time) => time,
@@ -209,8 +210,16 @@ pub async fn read_event<TRead: AsyncRead + Unpin>(chunk: &mut Chunk<TRead>) -> R
     let event_type = read_byte(&mut chunk.io).await.map_err(|_| Error::EventData)?;
 
     let event = match event_type {
-        0xf0 => read_data(&mut chunk.io).await.map(SysexEvent::F0).map(Event::Sysex).map_err(|_| Error::EventData)?,
-        0xf7 => read_data(&mut chunk.io).await.map(SysexEvent::F7).map(Event::Sysex).map_err(|_| Error::EventData)?,
+        0xf0 => read_data(&mut chunk.io).await
+            .map(Cow::Owned)
+            .map(SysexEvent::F0)
+            .map(Event::Sysex)
+            .map_err(|_| Error::EventData)?,
+        0xf7 => read_data(&mut chunk.io).await
+            .map(Cow::Owned)
+            .map(SysexEvent::F7)
+            .map(Event::Sysex)
+            .map_err(|_| Error::EventData)?,
         0xff => {
             let meta_event = read_meta_event(&mut chunk.io).await.map_err(|_| Error::EventData)?;
             Event::Meta(meta_event)

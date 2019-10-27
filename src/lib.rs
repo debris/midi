@@ -22,6 +22,7 @@
 
 mod read;
 
+use std::borrow::Cow;
 pub use read::{read_header, read_chunk, read_event};
 
 /// MIDI header chunk
@@ -64,15 +65,15 @@ pub enum MetaType {
 pub struct MidiEvent;
 
 #[derive(Debug)]
-pub enum MetaEvent {
+pub enum MetaEvent<'a> {
     SequenceNumber(u16),
-    Text(String),
-    CopyrightNotice(String),
-    Name(String),
-    InstrumentName(String),
-    Lyric(String),
-    Marker(String),
-    CuePoint(String),
+    Text(Cow<'a, str>),
+    CopyrightNotice(Cow<'a, str>),
+    Name(Cow<'a, str>),
+    InstrumentName(Cow<'a, str>),
+    Lyric(Cow<'a, str>),
+    Marker(Cow<'a, str>),
+    CuePoint(Cow<'a, str>),
     ChannelPrefix(u8),
     EndOfTrack,
     SetTempo(u32),
@@ -93,24 +94,24 @@ pub enum MetaEvent {
         sf: u8,
         mi: u8,
     },
-    SequencerSpecific(Vec<u8>),
+    SequencerSpecific(Cow<'a, [u8]>),
     Unknown {
         meta_type: u8,
-        data: Vec<u8>,
+        data: Cow<'a, [u8]>,
     }
 }
 
 #[derive(Debug)]
-pub enum SysexEvent {
-    F0(Vec<u8>),
-    F7(Vec<u8>),
+pub enum SysexEvent<'a> {
+    F0(Cow<'a, [u8]>),
+    F7(Cow<'a, [u8]>),
 }
 
 #[derive(Debug)]
-pub enum Event {
+pub enum Event<'a> {
     Midi(MidiEvent),
-    Meta(MetaEvent),
-    Sysex(SysexEvent),
+    Meta(MetaEvent<'a>),
+    Sysex(SysexEvent<'a>),
 }
 
 #[derive(Debug)]
