@@ -2,18 +2,19 @@
 //!
 //! ```
 //! # use midi;
-//! # pub async fn read(io: &[u8]) -> Result<(), midi::Error> {
-//! let header = midi::read_header(io).await?;
+//! # fn no_allocation_read(mut bytes: &[u8]) -> Result<(), midi::Error> {
+//! let cursor: &mut &[u8] = &mut bytes;
+//! let header = midi::read_header(cursor)?;
 //! for _ in 0 .. header.tracks {
-//!     let mut chunk = midi::read_chunk(io).await?;
-//!     while let Some((time, event)) = midi::read_event(&mut chunk).await? {
-//!            
-//!     }
+//! 	let mut track_data = midi::read_track_data(cursor)?;
+//!  	let track_data_cursor = &mut track_data;
+//! 	while !track_data_cursor.is_empty() {
+//!  	let _event = midi::read_event(track_data_cursor)?;
+//!
+//! 	}
 //! }
-//! #   
-//! #   Ok(())
+//! # Ok(())
 //! # }
-//! 
 //! ```
 //!
 //! [Documentation] 
@@ -22,8 +23,7 @@
 
 mod read;
 
-use std::borrow::Cow;
-pub use read::{read_header, read_chunk, read_event};
+pub use read::{read_smf, read_header, read_track, read_track_data, read_event};
 
 /// MIDI header chunk
 pub struct Header {
@@ -32,23 +32,20 @@ pub struct Header {
     pub division: u16,
 }
 
-/// MIDI reading errors
 #[derive(Debug)]
-pub enum Error {
-    HeaderType,
-    HeaderLength,
-    HeaderFormat,
-    HeaderTracks,
-    HeaderDivision,
-    TrackType,
-    TrackLength,
-    TrackData,
-    EventTime,
-    EventData,
+pub struct Error {
+    context: &'static str,
+    kind: ErrorKind,
+}
+
+#[derive(Debug)]
+pub enum ErrorKind {
+    Fatal,
+    Invalid,
 }
 
 /// MIDI file format
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Format {
     Single,
     MultiTrack,
@@ -111,13 +108,13 @@ pub enum MidiEventKind {
 #[derive(Debug)]
 pub enum MetaEvent<'a> {
     SequenceNumber(u16),
-    Text(Cow<'a, str>),
-    CopyrightNotice(Cow<'a, str>),
-    Name(Cow<'a, str>),
-    InstrumentName(Cow<'a, str>),
-    Lyric(Cow<'a, str>),
-    Marker(Cow<'a, str>),
-    CuePoint(Cow<'a, str>),
+    Text(&'a str),
+    CopyrightNotice(&'a str),
+    Name(&'a str),
+    InstrumentName(&'a str),
+    Lyric(&'a str),
+    Marker(&'a str),
+    CuePoint(&'a str),
     ChannelPrefix(u8),
     EndOfTrack,
     SetTempo(u32),
@@ -138,27 +135,44 @@ pub enum MetaEvent<'a> {
         sf: u8,
         mi: u8,
     },
-    SequencerSpecific(Cow<'a, [u8]>),
+    SequencerSpecific(&'a [u8]),
     Unknown {
         meta_type: u8,
-        data: Cow<'a, [u8]>,
+        data: &'a [u8],
     }
 }
 
 #[derive(Debug)]
 pub enum SysexEvent<'a> {
-    F0(Cow<'a, [u8]>),
-    F7(Cow<'a, [u8]>),
+    F0(&'a [u8]),
+    F7(&'a [u8]),
 }
 
 #[derive(Debug)]
-pub enum Event<'a> {
+pub enum EventKind<'a> {
     Midi(MidiEvent),
     Meta(MetaEvent<'a>),
     Sysex(SysexEvent<'a>),
 }
 
 #[derive(Debug)]
-pub struct Chunk<T> {
-    io: T,
+pub struct Event<'a> {
+    pub time: u32,
+    pub kind: EventKind<'a>, 
+}
+
+pub struct Track<'a> {
+    pub events: Vec<Event<'a>>,
+}
+
+pub struct Smf<'a> {
+    pub format: Format,
+    pub tracks: Vec<Track<'a>>,
+    pub division: u16,
+}
+
+impl<'a> Smf<'a> {
+    pub fn read(mut data: &'a [u8]) -> Result<Self, Error> {
+        read_smf(&mut data)
+    }
 }

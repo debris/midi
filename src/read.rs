@@ -1,59 +1,108 @@
 use std::convert::TryInto;
-use std::borrow::Cow;
-use futures::io::{self, AsyncRead, AsyncReadExt, Take};
-use crate::{Header, Error, Format, Chunk, Event, SysexEvent, MidiEvent, MetaEvent, MidiEventKind, Action};
+use std::str;
+use crate::{
+    SysexEvent, Header, Error, ErrorKind, Format, Event, EventKind, Track, 
+    Smf, MetaEvent, Action, MidiEvent, MidiEventKind,
+};
 
-async fn starts_with<TRead: AsyncRead + Unpin>(mut io: TRead, bytes: &[u8; 4]) -> bool {
-    let mut data = [0u8; 4];
-    // error here can be ignored, cause if reading fails, bytes != data
-    let _ = io.read_exact(&mut data).await;
-    bytes == &data
-}
-
-async fn read_byte<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<u8, io::Error> {
-    let mut data = [0u8; 1];
-    let _ = io.read_exact(&mut data).await?;
-    Ok(data[0])
-}
-
-async fn assert_byte<TRead: AsyncRead + Unpin>(io: TRead, byte: u8) -> Result<(), io::Error> {
-    let b = read_byte(io).await?;
-    if b == byte {
-        Ok(())
-    } else {
-        // TODO: be more descriptive
-        Err(io::ErrorKind::InvalidData.into())
+fn context(context: &'static str) -> impl FnOnce(ErrorKind) -> Error {
+    move |kind| {
+        Error {
+            context,
+            kind,
+        }
     }
 }
 
-async fn read_u16<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<u16, io::Error> {
-    let mut data = [0u8; 2];
-    let _ = io.read_exact(&mut data).await?;
-    Ok(u16::from_le_bytes(data.try_into().unwrap()))
+fn read_bytes<'a>(data: &mut &'a [u8], len: usize) -> Result<&'a [u8], ErrorKind> {
+    if data.len() < len {
+        return Err(ErrorKind::Fatal)
+    }
+    let (result, rest) = data.split_at(len);
+    *data = rest;
+    Ok(result)
 }
 
-async fn read_u24<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<u32, io::Error> {
-    let mut data = [0u8; 4];
-    let _ = io.read_exact(&mut data[0..3]).await?;
-    Ok(u32::from_le_bytes(data.try_into().unwrap()))
+fn read_u7(data: &mut &[u8]) -> Result<u8, ErrorKind> {
+    let byte = read_u8(data)?;
+    if byte <= 0x7f {
+        Ok(byte)
+    } else {
+        Err(ErrorKind::Invalid)
+    }
 }
 
-async fn read_u32<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<u32, io::Error> {
-    let mut data = [0u8; 4];
-    let _ = io.read_exact(&mut data).await?;
-    Ok(u32::from_le_bytes(data.try_into().unwrap()))
+fn read_u8(data: &mut &[u8]) -> Result<u8, ErrorKind> {
+    read_bytes(data, 1)
+        .map(|b| b[0])
+        .map(u8::from_le)
 }
 
-async fn read_vlq<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<u32, io::Error> {
+fn read_u16(data: &mut &[u8]) -> Result<u16, ErrorKind> {
+    read_bytes(data, 2)
+        .map(|b| b.try_into().unwrap())
+        .map(u16::from_le_bytes)
+}
+
+fn read_u24(data: &mut &[u8]) -> Result<u32, ErrorKind> {
+    read_bytes(data, 3)
+        .map(|b| {
+            let mut bytes = [0u8; 4];
+            bytes[..3].copy_from_slice(&b);
+            bytes
+        })
+        .map(|b| b.try_into().unwrap())
+        .map(u32::from_le_bytes)
+}
+
+fn read_u32(data: &mut &[u8]) -> Result<u32, ErrorKind> {
+    read_bytes(data, 4)
+        .map(|b| b.try_into().unwrap())
+        .map(u32::from_le_bytes)
+}
+
+fn read_format(data: &mut &[u8]) -> Result<Format, ErrorKind> {
+    let value = read_u16(data)?;
+    let format = match value {
+        0 => Format::Single,
+        1 => Format::MultiTrack,
+        2 => Format::MultiSequence,
+        _ => return Err(ErrorKind::Invalid),
+    };
+    Ok(format)
+}
+
+fn expect_bytes(data: &mut &[u8], expected: &[u8]) -> Result<(), ErrorKind> {
+    if read_bytes(data, expected.len())? != expected {
+        return Err(ErrorKind::Invalid)
+    }
+    Ok(())
+}
+
+fn expect_u8(data: &mut &[u8], expected: u8) -> Result<(), ErrorKind> {
+    if read_u8(data)? != expected {
+        return Err(ErrorKind::Invalid)
+    }
+    Ok(())
+}
+
+fn expect_u32(data: &mut &[u8], expected: u32) -> Result<(), ErrorKind> {
+    if read_u32(data)? != expected {
+        return Err(ErrorKind::Invalid)
+    }
+    Ok(())
+}
+
+fn read_vlq(data: &mut &[u8]) -> Result<u32, ErrorKind> {
     let mut result: u32 = 0;
     let mut size: usize = 0;
     while {
         // vlq must fit into 32 bit integer
         if size > 3 {
-            return Err(io::ErrorKind::InvalidData.into())
+            return Err(ErrorKind::Invalid)
         }
 
-        let byte = read_byte(&mut io).await?;
+        let byte = read_u8(data)?;
         size += 1;
         result |= (byte & 0b0111_1111) as u32;
         (byte & 0b1000_0000) != 0
@@ -64,90 +113,91 @@ async fn read_vlq<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<u32, io::Er
     Ok(u32::from_le(result))
 }
 
-async fn read_data<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Vec<u8>, io::Error> {
-    let length = read_vlq(&mut io).await?;
-    let mut data = vec![0u8; length as usize];
-    io.read_exact(&mut data).await?;
-    Ok(data)
+fn read_data<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], ErrorKind> {
+    let length = read_vlq(data)?;
+    read_bytes(data, length as usize)
 }
 
-async fn read_text<TRead: AsyncRead + Unpin>(io: TRead) -> Result<String, io::Error> {
-    read_data(io).await.map(|data| String::from_utf8(data).expect("TODO"))
+fn read_text<'a>(data: &mut &'a [u8]) -> Result<&'a str, ErrorKind> {
+    let text_data = read_data(data)?;
+    str::from_utf8(text_data).map_err(|_| ErrorKind::Invalid)
 }
 
-async fn read_action<TRead: AsyncRead + Unpin>(io: TRead) -> Result<Action, io::Error> {
-    let byte = read_byte(io).await?;
-    match byte {
-        0x00 => Ok(Action::Disconnect),
-        0x7f => Ok(Action::Reconnect),
-        _ => Err(io::ErrorKind::InvalidData.into()),
-    }
+fn read_action(data: &mut &[u8])-> Result<Action, ErrorKind> {
+    let byte = read_u8(data)?;
+    let action = match byte {
+        0x00 => Action::Disconnect,
+        0x7f => Action::Reconnect,
+        _ => return Err(ErrorKind::Invalid),
+    };
+
+    Ok(action)
 }
 
-async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<MetaEvent<'static>, io::Error> {
-    let meta_type = read_byte(&mut io).await?;
+fn read_meta_event<'a>(bytes: &mut &'a [u8])-> Result<MetaEvent<'a>, ErrorKind> {
+    let meta_type = read_u8(bytes)?;
     let meta_event = match meta_type {
         0x00 => {
-            assert_byte(&mut io, 2).await?;
-            let number = read_u16(&mut io).await?;
+            expect_u8(bytes, 2)?;
+            let number = read_u16(bytes)?;
             MetaEvent::SequenceNumber(number) 
         },
-        0x01 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Text)?,
-        0x02 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::CopyrightNotice)?,
-        0x03 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Name)?,
-        0x04 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::InstrumentName)?,
-        0x05 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Lyric)?,
-        0x06 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::Marker)?,
-        0x07 => read_text(&mut io).await.map(Cow::Owned).map(MetaEvent::CuePoint)?,
+        0x01 => read_text(bytes).map(MetaEvent::Text)?,
+        0x02 => read_text(bytes).map(MetaEvent::CopyrightNotice)?,
+        0x03 => read_text(bytes).map(MetaEvent::Name)?,
+        0x04 => read_text(bytes).map(MetaEvent::InstrumentName)?,
+        0x05 => read_text(bytes).map(MetaEvent::Lyric)?,
+        0x06 => read_text(bytes).map(MetaEvent::Marker)?,
+        0x07 => read_text(bytes).map(MetaEvent::CuePoint)?,
         0x20 => {
-            assert_byte(&mut io, 1).await?;
-            let channel = read_byte(&mut io).await?;
+            expect_u8(bytes, 1)?;
+            let channel = read_u8(bytes)?;
             MetaEvent::ChannelPrefix(channel)
         },
         0x2f => {
-            assert_byte(&mut io, 0).await?;
+            expect_u8(bytes, 0)?;
             MetaEvent::EndOfTrack
         },
         0x51 => {
-            assert_byte(&mut io, 3).await?;
-            let tempo = read_u24(&mut io).await?;
+            expect_u8(bytes, 3)?;
+            let tempo = read_u24(bytes)?;
             MetaEvent::SetTempo(tempo)
         },
         0x54 => {
-            assert_byte(&mut io, 5).await?;
-            let hh = read_byte(&mut io).await?;
-            let mm = read_byte(&mut io).await?;
-            let ss = read_byte(&mut io).await?;
-            let fr = read_byte(&mut io).await?;
-            let ff = read_byte(&mut io).await?;
+            expect_u8(bytes, 5)?;
+            let hh = read_u8(bytes)?;
+            let mm = read_u8(bytes)?;
+            let ss = read_u8(bytes)?;
+            let fr = read_u8(bytes)?;
+            let ff = read_u8(bytes)?;
             MetaEvent::SMTPEOffset {
                 hh, mm, ss, fr, ff
             }
         },
         0x58 => {
-            assert_byte(&mut io, 4).await?;
-            let nn = read_byte(&mut io).await?;
-            let dd = read_byte(&mut io).await?;
-            let cc = read_byte(&mut io).await?;
-            let bb = read_byte(&mut io).await?;
+            expect_u8(bytes, 4)?;
+            let nn = read_u8(bytes)?;
+            let dd = read_u8(bytes)?;
+            let cc = read_u8(bytes)?;
+            let bb = read_u8(bytes)?;
             MetaEvent::TimeSignature {
                 nn, dd, cc, bb
             }
         },
         0x59 => {
-            assert_byte(&mut io, 2).await?;
-            let sf = read_byte(&mut io).await?;
-            let mi = read_byte(&mut io).await?;
+            expect_u8(bytes, 2)?;
+            let sf = read_u8(bytes)?;
+            let mi = read_u8(bytes)?;
             MetaEvent::KeySignature {
                 sf, mi
             }
         },
-        0x7f => read_data(&mut io).await.map(Cow::Owned).map(MetaEvent::SequencerSpecific)?,
+        0x7f => read_data(bytes).map(MetaEvent::SequencerSpecific)?,
         _ => {
-            let data = read_data(&mut io).await?;
+            let data = read_data(bytes)?;
             MetaEvent::Unknown {
                 meta_type,
-                data: Cow::Owned(data),
+                data,
             }
         }
     };
@@ -156,55 +206,55 @@ async fn read_meta_event<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Meta
 }
 
 // https://www.midi.org/specifications/item/table-1-summary-of-midi-message
-async fn read_midi_event<TRead: AsyncRead + Unpin>(mut io: TRead, status_byte: u8) -> Result<MidiEvent, io::Error> {
+fn read_midi_event(bytes: &mut &[u8], status_byte: u8) -> Result<MidiEvent, ErrorKind> {
     let channel = status_byte & 0x0f;
     let status = status_byte & 0xf0;
     let kind = match status {
         0x80 => {
-            let key = read_byte(&mut io).await?;
-            let velocity = read_byte(&mut io).await?;
+            let key = read_u7(bytes)?;
+            let velocity = read_u7(bytes)?;
             MidiEventKind::NoteOff {
                 key, velocity
             }
         },
         0x90 => {
-            let key = read_byte(&mut io).await?;
-            let velocity = read_byte(&mut io).await?;
+            let key = read_u7(bytes)?;
+            let velocity = read_u7(bytes)?;
             MidiEventKind::NoteOn {
                 key, velocity
             }
         },
         0xa0 => {
-            let key = read_byte(&mut io).await?;
-            let velocity = read_byte(&mut io).await?;
+            let key = read_u7(bytes)?;
+            let velocity = read_u7(bytes)?;
             MidiEventKind::PolyphonicKeyPressure {
                 key, velocity
             }
         },
         0xb0 => {
-            let number = read_byte(&mut io).await?;
+            let number = read_u7(bytes)?;
             match number {
-                0x78 => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::AllSoundOff)?,
-                0x79 => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::ResetAllControllers)?,
-                0x7a => read_action(&mut io).await.map(MidiEventKind::LocalControl)?,
-                0x7b => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::AllNotesOff)?,
-                0x7c => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::OmniModeOff)?,
-                0x7d => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::OmniModeOn)?,
-                0x7e => read_byte(&mut io).await.map(MidiEventKind::MonoModeOn)?,
-                0x7f => assert_byte(&mut io, 0).await.map(|_| MidiEventKind::PolyModeOn)?,
+                0x78 => expect_u8(bytes, 0).map(|_| MidiEventKind::AllSoundOff)?,
+                0x79 => expect_u8(bytes, 0).map(|_| MidiEventKind::ResetAllControllers)?,
+                0x7a => read_action(bytes).map(MidiEventKind::LocalControl)?,
+                0x7b => expect_u8(bytes, 0).map(|_| MidiEventKind::AllNotesOff)?,
+                0x7c => expect_u8(bytes, 0).map(|_| MidiEventKind::OmniModeOff)?,
+                0x7d => expect_u8(bytes, 0).map(|_| MidiEventKind::OmniModeOn)?,
+                0x7e => read_u8(bytes).map(MidiEventKind::MonoModeOn)?,
+                0x7f => expect_u8(bytes, 0).map(|_| MidiEventKind::PolyModeOn)?,
                 _ => {
-                    let value = read_byte(&mut io).await?;
+                    let value = read_u7(bytes)?;
                     MidiEventKind::ControllerChange {
                         number, value
                     }
                 }
             }
         },
-        0xc0 => read_byte(&mut io).await.map(MidiEventKind::ProgramChange)?,
-        0xd0 => read_byte(&mut io).await.map(MidiEventKind::ChannelKeyPressure)?,
+        0xc0 => read_u7(bytes).map(MidiEventKind::ProgramChange)?,
+        0xd0 => read_u7(bytes).map(MidiEventKind::ChannelKeyPressure)?,
         0xe0 => {
-            let lsb = read_byte(&mut io).await?;
-            let msb = read_byte(&mut io).await?;
+            let lsb = read_u7(bytes)?;
+            let msb = read_u7(bytes)?;
             MidiEventKind::PitchBend {
                 lsb, msb
             }
@@ -223,30 +273,37 @@ async fn read_midi_event<TRead: AsyncRead + Unpin>(mut io: TRead, status_byte: u
     Ok(midi_event)
 }
 
-pub async fn read_header<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Header, Error> {
-    // validate chunk type
-    if !starts_with(&mut io, b"MThd").await {
-        return Err(Error::HeaderLength)
+pub fn read_smf<'a>(bytes: &mut &'a [u8]) -> Result<Smf<'a>, Error> {
+    let header = read_header(bytes)?;
+    let mut tracks = Vec::with_capacity(header.tracks as usize);
+    for _ in 0..header.tracks {
+        let track = read_track(bytes)?;
+        tracks.push(track);
     }
+    let smf = Smf {
+        format: header.format,
+        tracks,
+        division: header.division,
+    };
+    Ok(smf)
+}
+
+pub fn read_header(bytes: &mut &[u8]) -> Result<Header, Error> {
+    // validate chunk type
+    expect_bytes(bytes, b"MThd")
+        .map_err(context("read_header: header type must be 'MThd'"))?;
 
     // validate header length
-    let _ = read_u32(&mut io).await.ok()
-        .filter(|length| *length == 6)
-        .ok_or_else(|| Error::HeaderLength)?;
+    expect_u32(bytes, 6)
+        .map_err(context("read_header: header data length should be 6"))?;
 
-    // read format
-    let format = read_u16(&mut io).await.ok()
-        .and_then(|format| match format {
-            0 => Some(Format::Single),
-            1 => Some(Format::MultiTrack),
-            2 => Some(Format::MultiSequence),
-            _ => None,
-        })
-        .ok_or_else(|| Error::HeaderFormat)?;
-
-    // read tracks 
-    let tracks = read_u16(&mut io).await.map_err(|_| Error::HeaderTracks)?;
-    let division = read_u16(&mut io).await.map_err(|_| Error::HeaderDivision)?;
+    // read header fields
+    let format = read_format(bytes)
+        .map_err(context("read_header: header must specify format"))?;
+    let tracks = read_u16(bytes)
+        .map_err(context("read_header: header must specify tracks"))?;
+    let division = read_u16(bytes)
+        .map_err(context("read_header: header must specify division"))?;
 
     let header = Header {
         format,
@@ -257,75 +314,83 @@ pub async fn read_header<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Head
     Ok(header)
 }
 
-pub async fn read_chunk<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<Chunk<Take<TRead>>, Error> {
+pub fn read_track_data<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], Error> {
     // validate chunk type
-    if !starts_with(&mut io, b"MTrk").await {
-        return Err(Error::TrackType)
-    }
+    expect_bytes(bytes, b"MTrk")
+        .map_err(context("read_track_data: track type must be 'MTrk'"))?;
 
-    // read chunk length
-    let length = read_u32(&mut io).await.map_err(|_| Error::TrackLength)?;
+    // read track len
+    let len = read_u32(bytes)
+        .map_err(context("read_track_data: track must specify len"))?;
 
-    let chunk = Chunk {
-        io: io.take(length as u64),
-    };
+    // read track data
+    let track_data = read_bytes(bytes, len as usize)
+        .map_err(context("read_track_data: track must contain event bytes"))?;
 
-    Ok(chunk)
+    Ok(track_data)
 }
 
-pub async fn read_event<TRead: AsyncRead + Unpin>(chunk: &mut Chunk<TRead>) -> Result<Option<(u32, Event<'static>)>, Error> {
-    // read time since previous event
-    let time = match read_vlq(&mut chunk.io).await {
-        Ok(time) => time,
-        Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-            return Ok(None)
-        },
-        Err(_) => return Err(Error::EventData),
+pub fn read_track<'a>(bytes: &mut &'a [u8]) -> Result<Track<'a>, Error> {
+    let mut track_data = read_track_data(bytes)?;
+
+    // read events
+    let cursor: &mut &[u8] = &mut track_data;
+    let mut events = Vec::new();
+    while !cursor.is_empty() {
+        let event = read_event(cursor)?;
+        events.push(event);
+    }
+
+    let track = Track {
+        events,
     };
+
+    Ok(track)
+}
+
+pub fn read_event<'a>(bytes: &mut &'a [u8]) -> Result<Event<'a>, Error> {
+    // read time
+    let time = read_vlq(bytes)
+        .map_err(context("read_event: event must have valid time"))?;
 
     // read event type
-    let event_type = read_byte(&mut chunk.io).await.map_err(|_| Error::EventData)?;
+    let event_type = read_u8(bytes)
+        .map_err(context("read_event: event must have type"))?;
 
-    let event = match event_type {
-        0xf0 => read_data(&mut chunk.io).await
-            .map(Cow::Owned)
-            .map(SysexEvent::F0)
-            .map(Event::Sysex)
-            .map_err(|_| Error::EventData)?,
-        0xf7 => read_data(&mut chunk.io).await
-            .map(Cow::Owned)
-            .map(SysexEvent::F7)
-            .map(Event::Sysex)
-            .map_err(|_| Error::EventData)?,
-        0xff => {
-            let meta_event = read_meta_event(&mut chunk.io).await.map_err(|_| Error::EventData)?;
-            Event::Meta(meta_event)
-        },
-        _ => {
-            let midi_event = read_midi_event(&mut chunk.io, event_type).await.map_err(|_| Error::EventData)?;
-            Event::Midi(midi_event)
-        }
+    // read event data
+    let kind = match event_type {
+        0xf0 => read_data(bytes).map(SysexEvent::F0).map(EventKind::Sysex)
+            .map_err(context("read_event: failed to read sysex event"))?,
+        0xf7 => read_data(bytes).map(SysexEvent::F7).map(EventKind::Sysex)
+            .map_err(context("read_event: failed to read sysex event"))?,
+        0xff => read_meta_event(bytes).map(EventKind::Meta)
+            .map_err(context("read_event: failed to read meta event"))?,
+        _ => read_midi_event(bytes, event_type).map(EventKind::Midi)
+            .map_err(context("read_event: failed to read midi event"))?,
+    };
+    
+    let event = Event {
+        kind,
+        time,
     };
 
-    // TODO: read the rest of the event
-    Ok(Some((time, event)))
+    Ok(event)
 }
 
 #[cfg(test)]
 mod tests {
-    use futures::FutureExt;
     use super::read_vlq;
 
     #[test]
     fn test_read_vlq() {
-        fn read_vlq_sync(bytes: &[u8]) -> u32 {
-            read_vlq(bytes).now_or_never().unwrap().unwrap()
+        fn read_vlq_u(mut bytes: &[u8]) -> u32 {
+            read_vlq(&mut bytes).unwrap()
         }
-        assert_eq!(read_vlq_sync(&[0]), 0);
-        assert_eq!(read_vlq_sync(&[0x7f]), 0x7f);
-        assert_eq!(read_vlq_sync(&[0x81, 0x00]), 0x80);
-        assert_eq!(read_vlq_sync(&[0xff, 0x7f]), 0x3fff);
-        assert_eq!(read_vlq_sync(&[0x87, 0x68]), 0x3e8);
-        assert_eq!(read_vlq_sync(&[0xbd, 0x84, 0x40]), 0xf4240);
+        assert_eq!(read_vlq_u(&[0]), 0);
+        assert_eq!(read_vlq_u(&[0x7f]), 0x7f);
+        assert_eq!(read_vlq_u(&[0x81, 0x00]), 0x80);
+        assert_eq!(read_vlq_u(&[0xff, 0x7f]), 0x3fff);
+        assert_eq!(read_vlq_u(&[0x87, 0x68]), 0x3e8);
+        assert_eq!(read_vlq_u(&[0xbd, 0x84, 0x40]), 0xf4240);
     }
 }

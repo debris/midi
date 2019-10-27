@@ -1,12 +1,14 @@
 use midi;
-use futures::io::AsyncRead;
 
-async fn example_read<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<(), midi::Error> {
-    let header = midi::read_header(&mut io).await?;
+fn no_allocation_read(mut bytes: &[u8]) -> Result<(), midi::Error> {
+    let cursor = &mut bytes;
+    let header = midi::read_header(cursor)?;
     for _ in 0 .. header.tracks {
-        let mut chunk = midi::read_chunk(&mut io).await?;
-        while let Some((_time, _event)) = midi::read_event(&mut chunk).await? {
-            
+        let mut track_data = midi::read_track_data(cursor)?;
+        let track_data_cursor = &mut track_data;
+        while !track_data_cursor.is_empty() {
+            let _event = midi::read_event(track_data_cursor)?;
+
         }
     }
     
@@ -14,5 +16,4 @@ async fn example_read<TRead: AsyncRead + Unpin>(mut io: TRead) -> Result<(), mid
 }
 
 fn main() {
-
 }
