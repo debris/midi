@@ -43,7 +43,7 @@ pub struct Error {
 /// [`Error`] type.
 ///
 /// [`Error`]: struct.Error.html
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ErrorKind {
     /// Non-recoverable.
     Fatal,

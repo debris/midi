@@ -50,7 +50,7 @@ fn read_u24(data: &mut &[u8]) -> Result<u32, ErrorKind> {
     read_bytes(data, 3)
         .map(|b| {
             let mut bytes = [0u8; 4];
-            bytes[..3].copy_from_slice(&b);
+            bytes[1..].copy_from_slice(&b);
             bytes
         })
         .map(|b| b.try_into().unwrap())
@@ -550,13 +550,46 @@ impl<'a>Iterator for TrackChunk<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::Format;
-    use super::{read_vlq, read_u32, read_header_chunk};
+    use core::ops;
+    use crate::{Format, ErrorKind};
+    use super::{
+        read_vlq, read_u7, read_u16, read_u24, read_u32, read_header_chunk
+    };
+
+    
+    fn test_cursor<'a, 'c>(data: &'c mut &'a [u8]) -> TestCursor<'a, 'c> {
+        TestCursor(data)
+    }
+
+    /// Cursor which needs to be empty on drop
+    struct TestCursor<'a, 'cursor>(&'cursor mut &'a [u8]);
+
+    impl<'a, 'cursor>ops::Deref for TestCursor<'a, 'cursor> {
+        type Target = &'a [u8];
+
+        fn deref(&self) -> &Self::Target {
+            self.0
+        }
+    }
+
+    impl<'a, 'cursor>ops::DerefMut for TestCursor<'a, 'cursor> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.0
+        }
+    }
+
+    impl<'a, 'cursor> Drop for TestCursor<'a, 'cursor> {
+        fn drop(&mut self) {
+            // compare it empty slice to print the content of the cursor
+            // in case of the error
+            assert_eq!(self.0, &&[]);
+        }
+    }
 
     #[test]
     fn test_read_vlq() {
         fn read_vlq_u(mut bytes: &[u8]) -> u32 {
-            read_vlq(&mut bytes).unwrap()
+            read_vlq(&mut test_cursor(&mut bytes)).unwrap()
         }
         assert_eq!(read_vlq_u(&[0]), 0);
         assert_eq!(read_vlq_u(&[0x7f]), 0x7f);
@@ -567,9 +600,39 @@ mod tests {
     }
 
     #[test]
+    fn test_read_u7() {
+        fn read_u7_u(mut bytes: &[u8]) -> Result<u8, ErrorKind> {
+            read_u7(&mut test_cursor(&mut bytes))
+        }
+
+        assert_eq!(read_u7_u(&[0]).unwrap(), 0);
+        assert_eq!(read_u7_u(&[0x7f]).unwrap(), 0x7f);
+        assert_eq!(read_u7_u(&[0x80]).unwrap_err(), ErrorKind::Invalid);
+        assert_eq!(read_u7_u(&[0xff]).unwrap_err(), ErrorKind::Invalid);
+    }
+
+    #[test]
+    fn test_read_u16() {
+        fn read_u16_u(mut bytes: &[u8]) -> u16 {
+            read_u16(&mut test_cursor(&mut bytes)).unwrap()
+        }
+
+        assert_eq!(read_u16_u(&[0, 6]), 6);
+    }
+
+    #[test]
+    fn test_read_u24() {
+        fn read_u24_u(mut bytes: &[u8]) -> u32 {
+            read_u24(&mut test_cursor(&mut bytes)).unwrap()
+        }
+
+        assert_eq!(read_u24_u(&[0, 0, 6]), 6);
+    }
+
+    #[test]
     fn test_read_u32() {
         fn read_u32_u(mut bytes: &[u8]) -> u32 {
-            read_u32(&mut bytes).unwrap()
+            read_u32(&mut test_cursor(&mut bytes)).unwrap()
         }
 
         assert_eq!(read_u32_u(&[0, 0, 0, 6]), 6);
@@ -577,10 +640,8 @@ mod tests {
 
     #[test]
     fn test_read_header_chunk() {
-        let data = [77u8, 84, 104, 100, 0, 0, 0, 6, 0, 1, 0, 3, 4, 0];
-        let cursor = &mut (&data as &[u8]);
-        let header_chunk = read_header_chunk(cursor).unwrap();
-        assert!(cursor.is_empty());
+        let mut data = &[77u8, 84, 104, 100, 0, 0, 0, 6, 0, 1, 0, 3, 4, 0] as &[u8];
+        let header_chunk = read_header_chunk(&mut test_cursor(&mut data)).unwrap();
         assert_eq!(header_chunk.format, Format::MultiTrack);
         assert_eq!(header_chunk.tracks, 3);
         assert_eq!(header_chunk.division, 1024);
