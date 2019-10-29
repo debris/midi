@@ -1,17 +1,35 @@
 //! MIDI streaming library.
 //!
+//! Normal reading
 //! ```
 //! # use midi;
-//! # fn no_allocation_read(mut bytes: &[u8]) -> Result<(), midi::Error> {
-//! let cursor: &mut &[u8] = &mut bytes;
-//! let header = midi::read_header(cursor)?;
-//! for _ in 0 .. header.tracks {
-//! 	let mut track_data = midi::read_track_data(cursor)?;
-//!  	let track_data_cursor = &mut track_data;
-//! 	while !track_data_cursor.is_empty() {
-//!  	let _event = midi::read_event(track_data_cursor)?;
+//! # fn just_read(bytes: &[u8]) -> Result<(), midi::Error> {
+//! let smf = midi::Smf::read(bytes)?;
+//! let _format = smf.format;
+//! let _division = smf.division;
+//! for track in smf.tracks {
+//!     for _event in track.events {
+//!     }
+//! }
+//! # Ok(())
+//! # }
 //!
-//! 	}
+//! ```
+//!
+//! Lazy reading (no heap allocations)
+//! ```
+//! # use midi;
+//! # fn no_allocation_read(bytes: &[u8]) -> Result<(), midi::Error> {
+//! let smf = midi::read::SmfReader::new(bytes)?;
+//! let header = smf.header();
+//! let _format = header.format;
+//! let _division = header.division;
+//! let track_chunks = smf.tracks();
+//! for track_chunk_data in track_chunks {
+//!     let events = track_chunk_data?;
+//!     for event in events {
+//!         let _event = event?;
+//!     }
 //! }
 //! # Ok(())
 //! # }
@@ -21,21 +39,12 @@
 //!
 //! [Documentation]: http://www.ccarh.org/courses/253/handout/smf/
 
-mod read;
-
-pub use read::{read_smf, read_header, read_track, read_track_data, read_event};
-
-/// MIDI header chunk
-pub struct Header {
-    pub format: Format,
-    pub tracks: u16,
-    pub division: u16,
-}
+pub mod read;
 
 #[derive(Debug)]
 pub struct Error {
-    context: &'static str,
-    kind: ErrorKind,
+    pub context: &'static str,
+    pub kind: ErrorKind,
 }
 
 #[derive(Debug)]
@@ -172,7 +181,25 @@ pub struct Smf<'a> {
 }
 
 impl<'a> Smf<'a> {
-    pub fn read(mut data: &'a [u8]) -> Result<Self, Error> {
-        read_smf(&mut data)
+    pub fn read(data: &'a [u8]) -> Result<Self, Error> {
+        let reader = read::SmfReader::new(data)?;
+        let header = reader.header();
+        let mut tracks = Vec::with_capacity(header.tracks as usize);
+        let track_chunks = reader.tracks();
+        for track_chunk_data in track_chunks {
+            let events = track_chunk_data?;
+            let track = Track {
+                events: events.collect::<Result<Vec<_>, _>>()?,
+            };
+            tracks.push(track);
+        }
+
+        let smf = Smf {
+            format: header.format,
+            tracks,
+            division: header.division,
+        };
+
+        Ok(smf)
     }
 }

@@ -1,8 +1,8 @@
 use std::convert::TryInto;
 use std::str;
 use crate::{
-    SysexEvent, Header, Error, ErrorKind, Format, Event, EventKind, Track, 
-    Smf, MetaEvent, Action, MidiEvent, MidiEventKind,
+    SysexEvent, Error, ErrorKind, Format, Event, EventKind, 
+    MetaEvent, Action, MidiEvent, MidiEventKind,
 };
 
 fn context(context: &'static str) -> impl FnOnce(ErrorKind) -> Error {
@@ -273,21 +273,6 @@ fn read_midi_event(bytes: &mut &[u8], status_byte: u8) -> Result<MidiEvent, Erro
     Ok(midi_event)
 }
 
-pub fn read_smf<'a>(bytes: &mut &'a [u8]) -> Result<Smf<'a>, Error> {
-    let header = read_header(bytes)?;
-    let mut tracks = Vec::with_capacity(header.tracks as usize);
-    for _ in 0..header.tracks {
-        let track = read_track(bytes)?;
-        tracks.push(track);
-    }
-    let smf = Smf {
-        format: header.format,
-        tracks,
-        division: header.division,
-    };
-    Ok(smf)
-}
-
 pub fn read_header(bytes: &mut &[u8]) -> Result<Header, Error> {
     // validate chunk type
     expect_bytes(bytes, b"MThd")
@@ -314,38 +299,20 @@ pub fn read_header(bytes: &mut &[u8]) -> Result<Header, Error> {
     Ok(header)
 }
 
-pub fn read_track_data<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], Error> {
+pub fn read_track<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], Error> {
     // validate chunk type
     expect_bytes(bytes, b"MTrk")
-        .map_err(context("read_track_data: track type must be 'MTrk'"))?;
+        .map_err(context("read_track: track type must be 'MTrk'"))?;
 
     // read track len
     let len = read_u32(bytes)
-        .map_err(context("read_track_data: track must specify len"))?;
+        .map_err(context("read_track: track must specify len"))?;
 
     // read track data
     let track_data = read_bytes(bytes, len as usize)
-        .map_err(context("read_track_data: track must contain event bytes"))?;
+        .map_err(context("read_track: track must contain event bytes"))?;
 
     Ok(track_data)
-}
-
-pub fn read_track<'a>(bytes: &mut &'a [u8]) -> Result<Track<'a>, Error> {
-    let mut track_data = read_track_data(bytes)?;
-
-    // read events
-    let cursor: &mut &[u8] = &mut track_data;
-    let mut events = Vec::new();
-    while !cursor.is_empty() {
-        let event = read_event(cursor)?;
-        events.push(event);
-    }
-
-    let track = Track {
-        events,
-    };
-
-    Ok(track)
 }
 
 pub fn read_event<'a>(bytes: &mut &'a [u8]) -> Result<Event<'a>, Error> {
@@ -375,6 +342,94 @@ pub fn read_event<'a>(bytes: &mut &'a [u8]) -> Result<Event<'a>, Error> {
     };
 
     Ok(event)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Header {
+    pub format: Format,
+    pub tracks: u16,
+    pub division: u16,
+}
+
+
+pub struct SmfReader<'a> {
+    header: Header,
+    // tracks chunks data
+    data: &'a [u8],
+}
+
+impl<'a> SmfReader<'a> {
+    pub fn new(mut data: &'a [u8]) -> Result<Self, Error> {
+        let cursor = &mut data;
+        let header = read_header(cursor)?;
+        let reader = Self {
+            header,
+            data: *cursor,
+        };
+        Ok(reader)
+    }
+
+    pub fn header(&self) -> Header {
+        self.header
+    }
+
+    pub fn tracks(&self) -> TrackChunks<'a> {
+        TrackChunks {
+            data: self.data,
+            tracks: self.header.tracks as usize,
+        }
+    }
+}
+
+pub struct TrackChunks<'a> {
+    data: &'a [u8],
+    tracks: usize,
+}
+
+impl<'a> Iterator for TrackChunks<'a> {
+    type Item = Result<TrackChunkData<'a>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.tracks == 0 {
+            return None
+        }
+
+        self.tracks -= 1;
+        let cursor = &mut self.data;
+        let track_data = match read_track(cursor) {
+            Ok(track_data) => track_data,
+            Err(err) => return Some(Err(err)),
+        };
+        self.data = *cursor;
+
+        let track_chunk_data = TrackChunkData {
+            data: track_data,
+        };
+
+        Some(Ok(track_chunk_data))
+    }
+}
+
+pub struct TrackChunkData<'a> {
+    data: &'a [u8],
+}
+
+impl<'a>Iterator for TrackChunkData<'a> {
+    type Item = Result<Event<'a>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.data.is_empty() {
+            return None
+        }
+
+        let cursor = &mut self.data;
+        let event = match read_event(cursor) {
+            Ok(event) => event,
+            Err(err) => return Some(Err(err)),
+        };
+        self.data = *cursor;
+        Some(Ok(event))
+    }
 }
 
 #[cfg(test)]
