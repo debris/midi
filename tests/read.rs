@@ -2,7 +2,8 @@ use midi;
 
 fn test_data(data: &[u8]) {
     let smf_reader = midi::read::SmfReader::new(data).unwrap();
-    let track_chunks = smf_reader.track_chunk_iter()
+    let track_chunks = smf_reader
+        .track_chunk_iter()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     let _tracks: Vec<Vec<midi::Event>> = track_chunks

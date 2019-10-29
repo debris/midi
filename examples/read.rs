@@ -10,9 +10,8 @@ fn no_allocation_read(bytes: &[u8]) -> Result<(), midi::Error> {
             let _event = event?;
         }
     }
-    
+
     Ok(())
 }
 
-fn main() {
-}
+fn main() {}

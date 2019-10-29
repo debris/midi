@@ -1,9 +1,8 @@
 /// Crate options behind `alloc` feature.
-
 extern crate alloc;
 
+use crate::{read, Error, Event, Format};
 use alloc::vec::Vec;
-use crate::{Event, Format, Error, read};
 
 /// `MTrk` chunk.
 #[derive(Debug)]

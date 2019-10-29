@@ -1,24 +1,19 @@
 //! Low-level `SMF` reading interface.
 
+use crate::{
+    Action, Error, ErrorKind, Event, EventKind, Format, MetaEvent, MidiEvent, MidiEventKind,
+    SysexEvent, Text,
+};
 use core::convert::TryInto;
 use core::str;
-use crate::{
-    SysexEvent, Error, ErrorKind, Format, Event, EventKind, Text,
-    MetaEvent, Action, MidiEvent, MidiEventKind,
-};
 
 fn context(context: &'static str) -> impl FnOnce(ErrorKind) -> Error {
-    move |kind| {
-        Error {
-            context,
-            kind,
-        }
-    }
+    move |kind| Error { context, kind }
 }
 
 fn read_bytes<'a>(data: &mut &'a [u8], len: usize) -> Result<&'a [u8], ErrorKind> {
     if data.len() < len {
-        return Err(ErrorKind::Fatal)
+        return Err(ErrorKind::Fatal);
     }
     let (result, rest) = data.split_at(len);
     *data = rest;
@@ -35,9 +30,7 @@ fn read_u7(data: &mut &[u8]) -> Result<u8, ErrorKind> {
 }
 
 fn read_u8(data: &mut &[u8]) -> Result<u8, ErrorKind> {
-    read_bytes(data, 1)
-        .map(|b| b[0])
-        .map(u8::from_be)
+    read_bytes(data, 1).map(|b| b[0]).map(u8::from_be)
 }
 
 fn read_u16(data: &mut &[u8]) -> Result<u16, ErrorKind> {
@@ -76,21 +69,21 @@ fn read_format(data: &mut &[u8]) -> Result<Format, ErrorKind> {
 
 fn expect_bytes(data: &mut &[u8], expected: &[u8]) -> Result<(), ErrorKind> {
     if read_bytes(data, expected.len())? != expected {
-        return Err(ErrorKind::Invalid)
+        return Err(ErrorKind::Invalid);
     }
     Ok(())
 }
 
 fn expect_u8(data: &mut &[u8], expected: u8) -> Result<(), ErrorKind> {
     if read_u8(data)? != expected {
-        return Err(ErrorKind::Invalid)
+        return Err(ErrorKind::Invalid);
     }
     Ok(())
 }
 
 fn expect_u32(data: &mut &[u8], expected: u32) -> Result<(), ErrorKind> {
     if read_u32(data)? != expected {
-        return Err(ErrorKind::Invalid)
+        return Err(ErrorKind::Invalid);
     }
     Ok(())
 }
@@ -101,7 +94,7 @@ fn read_vlq(data: &mut &[u8]) -> Result<u32, ErrorKind> {
     while {
         // vlq must fit into 32 bit integer
         if size > 3 {
-            return Err(ErrorKind::Invalid)
+            return Err(ErrorKind::Invalid);
         }
 
         let byte = read_u8(data)?;
@@ -124,7 +117,7 @@ fn read_text<'a>(data: &mut &'a [u8]) -> Result<Text<'a>, ErrorKind> {
     read_data(data).map(Text::new)
 }
 
-fn read_action(data: &mut &[u8])-> Result<Action, ErrorKind> {
+fn read_action(data: &mut &[u8]) -> Result<Action, ErrorKind> {
     let byte = read_u8(data)?;
     let action = match byte {
         0x00 => Action::Disconnect,
@@ -135,14 +128,14 @@ fn read_action(data: &mut &[u8])-> Result<Action, ErrorKind> {
     Ok(action)
 }
 
-fn read_meta_event<'a>(bytes: &mut &'a [u8])-> Result<MetaEvent<'a>, ErrorKind> {
+fn read_meta_event<'a>(bytes: &mut &'a [u8]) -> Result<MetaEvent<'a>, ErrorKind> {
     let meta_type = read_u8(bytes)?;
     let meta_event = match meta_type {
         0x00 => {
             expect_u8(bytes, 2)?;
             let number = read_u16(bytes)?;
-            MetaEvent::SequenceNumber(number) 
-        },
+            MetaEvent::SequenceNumber(number)
+        }
         0x01 => read_text(bytes).map(MetaEvent::Text)?,
         0x02 => read_text(bytes).map(MetaEvent::CopyrightNotice)?,
         0x03 => read_text(bytes).map(MetaEvent::Name)?,
@@ -154,16 +147,16 @@ fn read_meta_event<'a>(bytes: &mut &'a [u8])-> Result<MetaEvent<'a>, ErrorKind> 
             expect_u8(bytes, 1)?;
             let channel = read_u8(bytes)?;
             MetaEvent::ChannelPrefix(channel)
-        },
+        }
         0x2f => {
             expect_u8(bytes, 0)?;
             MetaEvent::EndOfTrack
-        },
+        }
         0x51 => {
             expect_u8(bytes, 3)?;
             let tempo = read_u24(bytes)?;
             MetaEvent::SetTempo(tempo)
-        },
+        }
         0x54 => {
             expect_u8(bytes, 5)?;
             let hh = read_u8(bytes)?;
@@ -171,35 +164,26 @@ fn read_meta_event<'a>(bytes: &mut &'a [u8])-> Result<MetaEvent<'a>, ErrorKind> 
             let ss = read_u8(bytes)?;
             let fr = read_u8(bytes)?;
             let ff = read_u8(bytes)?;
-            MetaEvent::SMTPEOffset {
-                hh, mm, ss, fr, ff
-            }
-        },
+            MetaEvent::SMTPEOffset { hh, mm, ss, fr, ff }
+        }
         0x58 => {
             expect_u8(bytes, 4)?;
             let nn = read_u8(bytes)?;
             let dd = read_u8(bytes)?;
             let cc = read_u8(bytes)?;
             let bb = read_u8(bytes)?;
-            MetaEvent::TimeSignature {
-                nn, dd, cc, bb
-            }
-        },
+            MetaEvent::TimeSignature { nn, dd, cc, bb }
+        }
         0x59 => {
             expect_u8(bytes, 2)?;
             let sf = read_u8(bytes)?;
             let mi = read_u8(bytes)?;
-            MetaEvent::KeySignature {
-                sf, mi
-            }
-        },
+            MetaEvent::KeySignature { sf, mi }
+        }
         0x7f => read_data(bytes).map(MetaEvent::SequencerSpecific)?,
         _ => {
             let data = read_data(bytes)?;
-            MetaEvent::Unknown {
-                meta_type,
-                data,
-            }
+            MetaEvent::Unknown { meta_type, data }
         }
     };
 
@@ -214,24 +198,18 @@ fn read_midi_event(bytes: &mut &[u8], status_byte: u8) -> Result<MidiEvent, Erro
         0x80 => {
             let key = read_u7(bytes)?;
             let velocity = read_u7(bytes)?;
-            MidiEventKind::NoteOff {
-                key, velocity
-            }
-        },
+            MidiEventKind::NoteOff { key, velocity }
+        }
         0x90 => {
             let key = read_u7(bytes)?;
             let velocity = read_u7(bytes)?;
-            MidiEventKind::NoteOn {
-                key, velocity
-            }
-        },
+            MidiEventKind::NoteOn { key, velocity }
+        }
         0xa0 => {
             let key = read_u7(bytes)?;
             let velocity = read_u7(bytes)?;
-            MidiEventKind::PolyphonicKeyPressure {
-                key, velocity
-            }
-        },
+            MidiEventKind::PolyphonicKeyPressure { key, velocity }
+        }
         0xb0 => {
             let number = read_u7(bytes)?;
             match number {
@@ -245,38 +223,30 @@ fn read_midi_event(bytes: &mut &[u8], status_byte: u8) -> Result<MidiEvent, Erro
                 0x7f => expect_u8(bytes, 0).map(|_| MidiEventKind::PolyModeOn)?,
                 _ => {
                     let value = read_u7(bytes)?;
-                    MidiEventKind::ControllerChange {
-                        number, value
-                    }
+                    MidiEventKind::ControllerChange { number, value }
                 }
             }
-        },
+        }
         0xc0 => read_u7(bytes).map(MidiEventKind::ProgramChange)?,
         0xd0 => read_u7(bytes).map(MidiEventKind::ChannelKeyPressure)?,
         0xe0 => {
             let lsb = read_u7(bytes)?;
             let msb = read_u7(bytes)?;
-            MidiEventKind::PitchBend {
-                lsb, msb
-            }
-        },
+            MidiEventKind::PitchBend { lsb, msb }
+        }
         _ => {
             unimplemented!();
         }
     };
 
-    let midi_event = MidiEvent {
-        channel,
-        kind,
-    };
-
+    let midi_event = MidiEvent { channel, kind };
 
     Ok(midi_event)
 }
 
 /// Low-level [`HeaderChunk`] reader.
-/// 
-/// Reads [`HeaderChunk`] and moves the cursor the beginning of the first 
+///
+/// Reads [`HeaderChunk`] and moves the cursor the beginning of the first
 /// [`TrackChunk`]
 ///
 /// # Example
@@ -298,16 +268,15 @@ pub fn read_header_chunk(cursor: &mut &[u8]) -> Result<HeaderChunk, Error> {
         .map_err(context("read_header_chunk: header type must be 'MThd'"))?;
 
     // validate header length
-    expect_u32(cursor, 6)
-        .map_err(context("read_header_chunk: header data length should be 6"))?;
+    expect_u32(cursor, 6).map_err(context("read_header_chunk: header data length should be 6"))?;
 
     // read header fields
-    let format = read_format(cursor)
-        .map_err(context("read_header_chunk: header must specify format"))?;
-    let tracks = read_u16(cursor)
-        .map_err(context("read_header_chunk: header must specify tracks"))?;
-    let division = read_u16(cursor)
-        .map_err(context("read_header_chunk: header must specify division"))?;
+    let format =
+        read_format(cursor).map_err(context("read_header_chunk: header must specify format"))?;
+    let tracks =
+        read_u16(cursor).map_err(context("read_header_chunk: header must specify tracks"))?;
+    let division =
+        read_u16(cursor).map_err(context("read_header_chunk: header must specify division"))?;
 
     let header = HeaderChunk {
         format,
@@ -320,14 +289,14 @@ pub fn read_header_chunk(cursor: &mut &[u8]) -> Result<HeaderChunk, Error> {
 
 /// Low-level [`TrackChunk`] reader.
 ///
-/// Reads [`TrackChunk`] and moves the cursor the beginning of the next 
+/// Reads [`TrackChunk`] and moves the cursor the beginning of the next
 /// [`TrackChunk`]
 ///
 /// # Example
 ///
 /// ```
 /// # use midi::{
-/// #   Error, 
+/// #   Error,
 /// #   read::{read_track_chunk, read_header_chunk}
 /// # };
 /// # fn foo(mut bytes: &[u8]) -> Result<(), Error> {
@@ -343,27 +312,23 @@ pub fn read_header_chunk(cursor: &mut &[u8]) -> Result<HeaderChunk, Error> {
 /// [`TrackChunk`]: struct.TrackChunk.html
 pub fn read_track_chunk<'a>(bytes: &mut &'a [u8]) -> Result<TrackChunk<'a>, Error> {
     // validate chunk type
-    expect_bytes(bytes, b"MTrk")
-        .map_err(context("read_track_chunk: track type must be 'MTrk'"))?;
+    expect_bytes(bytes, b"MTrk").map_err(context("read_track_chunk: track type must be 'MTrk'"))?;
 
     // read track len
-    let len = read_u32(bytes)
-        .map_err(context("read_track_chunk: track must specify len"))?;
+    let len = read_u32(bytes).map_err(context("read_track_chunk: track must specify len"))?;
 
     // read track data
     let data = read_bytes(bytes, len as usize)
         .map_err(context("read_track_chunk: track must contain event bytes"))?;
 
-    let track_chunk = TrackChunk {
-        data,
-    };
+    let track_chunk = TrackChunk { data };
 
     Ok(track_chunk)
 }
 
 /// Low-level [`Event`] reader.
-/// 
-/// Reads [`Event`] and moves the cursor the beginning of the next 
+///
+/// Reads [`Event`] and moves the cursor the beginning of the next
 /// [`Event`]
 ///
 /// # Example
@@ -382,29 +347,30 @@ pub fn read_track_chunk<'a>(bytes: &mut &'a [u8]) -> Result<TrackChunk<'a>, Erro
 /// [`Event`]: ../struct.Event.html
 pub fn read_event<'a>(bytes: &mut &'a [u8]) -> Result<Event<'a>, Error> {
     // read time
-    let time = read_vlq(bytes)
-        .map_err(context("read_event: event must have valid time"))?;
+    let time = read_vlq(bytes).map_err(context("read_event: event must have valid time"))?;
 
     // read event type
-    let event_type = read_u8(bytes)
-        .map_err(context("read_event: event must have type"))?;
+    let event_type = read_u8(bytes).map_err(context("read_event: event must have type"))?;
 
     // read event data
     let kind = match event_type {
-        0xf0 => read_data(bytes).map(SysexEvent::F0).map(EventKind::Sysex)
+        0xf0 => read_data(bytes)
+            .map(SysexEvent::F0)
+            .map(EventKind::Sysex)
             .map_err(context("read_event: failed to read sysex event"))?,
-        0xf7 => read_data(bytes).map(SysexEvent::F7).map(EventKind::Sysex)
+        0xf7 => read_data(bytes)
+            .map(SysexEvent::F7)
+            .map(EventKind::Sysex)
             .map_err(context("read_event: failed to read sysex event"))?,
-        0xff => read_meta_event(bytes).map(EventKind::Meta)
+        0xff => read_meta_event(bytes)
+            .map(EventKind::Meta)
             .map_err(context("read_event: failed to read meta event"))?,
-        _ => read_midi_event(bytes, event_type).map(EventKind::Midi)
+        _ => read_midi_event(bytes, event_type)
+            .map(EventKind::Midi)
             .map_err(context("read_event: failed to read midi event"))?,
     };
-    
-    let event = Event {
-        kind,
-        time,
-    };
+
+    let event = Event { kind, time };
 
     Ok(event)
 }
@@ -499,12 +465,12 @@ impl<'a> Iterator for TrackChunkIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.tracks == 0 {
             if self.data.is_empty() {
-                return None
+                return None;
             }
             return Some(Err(Error {
                 context: "TrackChunkIter::next: undread data left",
                 kind: ErrorKind::Invalid,
-            }))
+            }));
         }
 
         self.tracks -= 1;
@@ -522,20 +488,20 @@ impl<'a> Iterator for TrackChunkIter<'a> {
 /// Iterator over [`Event`]s.
 ///
 /// Created using [`SmfReader::track_chunk_iter`] method.
-/// 
+///
 /// [`Event`]: ../struct.Event.html
-/// [`SmfReader::track_chunk_iter`]: 
+/// [`SmfReader::track_chunk_iter`]:
 /// struct.SmfReader.html#method.track_chunk_iter
 pub struct TrackChunk<'a> {
     data: &'a [u8],
 }
 
-impl<'a>Iterator for TrackChunk<'a> {
+impl<'a> Iterator for TrackChunk<'a> {
     type Item = Result<Event<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.data.is_empty() {
-            return None
+            return None;
         }
 
         let cursor = &mut self.data;
@@ -550,13 +516,10 @@ impl<'a>Iterator for TrackChunk<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::{read_header_chunk, read_u16, read_u24, read_u32, read_u7, read_vlq};
+    use crate::{ErrorKind, Format};
     use core::ops;
-    use crate::{Format, ErrorKind};
-    use super::{
-        read_vlq, read_u7, read_u16, read_u24, read_u32, read_header_chunk
-    };
 
-    
     fn test_cursor<'a, 'c>(data: &'c mut &'a [u8]) -> TestCursor<'a, 'c> {
         TestCursor(data)
     }
@@ -564,7 +527,7 @@ mod tests {
     /// Cursor which needs to be empty on drop
     struct TestCursor<'a, 'cursor>(&'cursor mut &'a [u8]);
 
-    impl<'a, 'cursor>ops::Deref for TestCursor<'a, 'cursor> {
+    impl<'a, 'cursor> ops::Deref for TestCursor<'a, 'cursor> {
         type Target = &'a [u8];
 
         fn deref(&self) -> &Self::Target {
@@ -572,7 +535,7 @@ mod tests {
         }
     }
 
-    impl<'a, 'cursor>ops::DerefMut for TestCursor<'a, 'cursor> {
+    impl<'a, 'cursor> ops::DerefMut for TestCursor<'a, 'cursor> {
         fn deref_mut(&mut self) -> &mut Self::Target {
             self.0
         }

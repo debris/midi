@@ -25,8 +25,8 @@
 
 #![cfg_attr(not(feature = "alloc"), no_std)]
 
-pub mod read;
 mod features;
+pub mod read;
 
 use core::str;
 pub use features::*;
@@ -70,7 +70,7 @@ pub struct MidiEvent {
 
 /// [`MidiEventKind::LocalControl`] action.
 ///
-/// [`MidiEventKind::LocalControl`]: 
+/// [`MidiEventKind::LocalControl`]:
 /// enum.MidiEventKind.html#variant.LocalControl
 #[derive(Debug)]
 pub enum Action {
@@ -83,28 +83,13 @@ pub enum Action {
 /// [`MidiEvent`]: struct.MidiEvent.html
 #[derive(Debug)]
 pub enum MidiEventKind {
-    NoteOff {
-        key: u8,
-        velocity: u8,
-    },
-    NoteOn {
-        key: u8,
-        velocity: u8,
-    },
-    PolyphonicKeyPressure {
-        key: u8,
-        velocity: u8,
-    },
-    ControllerChange {
-        number: u8,
-        value: u8,
-    },
+    NoteOff { key: u8, velocity: u8 },
+    NoteOn { key: u8, velocity: u8 },
+    PolyphonicKeyPressure { key: u8, velocity: u8 },
+    ControllerChange { number: u8, value: u8 },
     ProgramChange(u8),
     ChannelKeyPressure(u8),
-    PitchBend {
-        lsb: u8,
-        msb: u8,
-    },
+    PitchBend { lsb: u8, msb: u8 },
 
     AllSoundOff,
     ResetAllControllers,
@@ -153,7 +138,7 @@ pub enum MetaEvent<'a> {
     Unknown {
         meta_type: u8,
         data: &'a [u8],
-    }
+    },
 }
 
 /// [`Event`] variant.
@@ -179,7 +164,7 @@ pub enum EventKind<'a> {
 #[derive(Debug)]
 pub struct Event<'a> {
     pub time: u32,
-    pub kind: EventKind<'a>, 
+    pub kind: EventKind<'a>,
 }
 
 /// [`MetaEvent`] text
@@ -195,16 +180,14 @@ impl<'a> Text<'a> {
     ///
     /// [`Text`]: struct.Text.html
     pub fn new(data: &'a [u8]) -> Self {
-        Text {
-            data,
-        }
+        Text { data }
     }
-    
+
     /// Try to decode text as utf8.
     pub fn as_utf8(&self) -> Result<&'a str, str::Utf8Error> {
         str::from_utf8(self.data)
     }
-    
+
     /// Returns text slice.
     pub fn raw(&self) -> &'a [u8] {
         self.data
