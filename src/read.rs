@@ -37,13 +37,13 @@ fn read_u7(data: &mut &[u8]) -> Result<u8, ErrorKind> {
 fn read_u8(data: &mut &[u8]) -> Result<u8, ErrorKind> {
     read_bytes(data, 1)
         .map(|b| b[0])
-        .map(u8::from_le)
+        .map(u8::from_be)
 }
 
 fn read_u16(data: &mut &[u8]) -> Result<u16, ErrorKind> {
     read_bytes(data, 2)
         .map(|b| b.try_into().unwrap())
-        .map(u16::from_le_bytes)
+        .map(u16::from_be_bytes)
 }
 
 fn read_u24(data: &mut &[u8]) -> Result<u32, ErrorKind> {
@@ -54,13 +54,13 @@ fn read_u24(data: &mut &[u8]) -> Result<u32, ErrorKind> {
             bytes
         })
         .map(|b| b.try_into().unwrap())
-        .map(u32::from_le_bytes)
+        .map(u32::from_be_bytes)
 }
 
 fn read_u32(data: &mut &[u8]) -> Result<u32, ErrorKind> {
     read_bytes(data, 4)
         .map(|b| b.try_into().unwrap())
-        .map(u32::from_le_bytes)
+        .map(u32::from_be_bytes)
 }
 
 fn read_format(data: &mut &[u8]) -> Result<Format, ErrorKind> {
@@ -112,7 +112,7 @@ fn read_vlq(data: &mut &[u8]) -> Result<u32, ErrorKind> {
         result <<= 7;
     }
 
-    Ok(u32::from_le(result))
+    Ok(result)
 }
 
 fn read_data<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], ErrorKind> {
@@ -545,7 +545,7 @@ impl<'a>Iterator for TrackChunk<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::read_vlq;
+    use super::{read_vlq, read_u32};
 
     #[test]
     fn test_read_vlq() {
@@ -558,5 +558,14 @@ mod tests {
         assert_eq!(read_vlq_u(&[0xff, 0x7f]), 0x3fff);
         assert_eq!(read_vlq_u(&[0x87, 0x68]), 0x3e8);
         assert_eq!(read_vlq_u(&[0xbd, 0x84, 0x40]), 0xf4240);
+    }
+
+    #[test]
+    fn test_read_u32() {
+        fn read_u32_u(mut bytes: &[u8]) -> u32 {
+            read_u32(&mut bytes).unwrap()
+        }
+
+        assert_eq!(read_u32_u(&[0, 0, 0, 6]), 6);
     }
 }

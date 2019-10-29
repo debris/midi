@@ -20,7 +20,7 @@ pub struct Smf<'a> {
 }
 
 impl<'a> Smf<'a> {
-    pub fn read_bytes(data: &'a [u8]) -> Result<Self, Error> {
+    pub fn read(data: &'a [u8]) -> Result<Self, Error> {
         let reader = read::SmfReader::new(data)?;
         let header = reader.header_chunk();
         let mut tracks = Vec::with_capacity(header.tracks as usize);
