@@ -2,9 +2,9 @@
 //!
 //! # Examples
 //!
-//! `DOM` reading using [`Smf`]
+//! `DOM` like reading using [`Smf`]
 //!
-//! ```
+//! ```ignore
 //! # use midi;
 //! # fn just_read(bytes: &[u8]) -> Result<(), midi::Error> {
 //! let smf = midi::Smf::read(bytes)?;
@@ -41,7 +41,12 @@
 //! [`Smf`]: struct.Smf.html
 //! [`SmfReader`]: read/struct.SmfReader.html
 
+#![no_std]
+
 pub mod read;
+mod features;
+
+pub use features::*;
 
 /// `SMF` reader error.
 #[derive(Debug)]
@@ -192,43 +197,4 @@ pub enum EventKind<'a> {
 pub struct Event<'a> {
     pub time: u32,
     pub kind: EventKind<'a>, 
-}
-
-
-/// `MTrk` chunk.
-#[derive(Debug)]
-pub struct Track<'a> {
-    pub events: Vec<Event<'a>>,
-}
-
-/// Standard Midi File.
-#[derive(Debug)]
-pub struct Smf<'a> {
-    pub format: Format,
-    pub tracks: Vec<Track<'a>>,
-    pub division: u16,
-}
-
-impl<'a> Smf<'a> {
-    pub fn read(data: &'a [u8]) -> Result<Self, Error> {
-        let reader = read::SmfReader::new(data)?;
-        let header = reader.header_chunk();
-        let mut tracks = Vec::with_capacity(header.tracks as usize);
-        let track_chunks = reader.track_chunk_iter();
-        for track_chunk_data in track_chunks {
-            let events = track_chunk_data?;
-            let track = Track {
-                events: events.collect::<Result<Vec<_>, _>>()?,
-            };
-            tracks.push(track);
-        }
-
-        let smf = Smf {
-            format: header.format,
-            tracks,
-            division: header.division,
-        };
-
-        Ok(smf)
-    }
 }

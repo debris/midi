@@ -1,7 +1,7 @@
 //! Low-level `SMF` reading interface.
 
-use std::convert::TryInto;
-use std::str;
+use core::convert::TryInto;
+use core::str;
 use crate::{
     SysexEvent, Error, ErrorKind, Format, Event, EventKind, 
     MetaEvent, Action, MidiEvent, MidiEventKind,
