@@ -1,3 +1,5 @@
+//! Low-level `SMF` reading interface.
+
 use std::convert::TryInto;
 use std::str;
 use crate::{
@@ -273,24 +275,42 @@ fn read_midi_event(bytes: &mut &[u8], status_byte: u8) -> Result<MidiEvent, Erro
     Ok(midi_event)
 }
 
-pub fn read_header(bytes: &mut &[u8]) -> Result<Header, Error> {
+/// Low-level [`HeaderChunk`] reader.
+/// 
+/// Reads [`HeaderChunk`] and moves the cursor the beginning of the first 
+/// [`TrackChunk`]
+///
+/// # Example
+///
+/// ```
+/// # use midi::{Error, read::read_header_chunk};
+/// # fn foo(mut bytes: &[u8]) -> Result<(), Error> {
+/// let cursor: &mut &[u8] = &mut bytes;
+/// let header_chunk = read_header_chunk(cursor)?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`HeaderChunk`]: struct.HeaderChunk.html
+/// [`TrackChunk`]: struct.TrackChunk.html
+pub fn read_header_chunk(cursor: &mut &[u8]) -> Result<HeaderChunk, Error> {
     // validate chunk type
-    expect_bytes(bytes, b"MThd")
-        .map_err(context("read_header: header type must be 'MThd'"))?;
+    expect_bytes(cursor, b"MThd")
+        .map_err(context("read_header_chunk: header type must be 'MThd'"))?;
 
     // validate header length
-    expect_u32(bytes, 6)
-        .map_err(context("read_header: header data length should be 6"))?;
+    expect_u32(cursor, 6)
+        .map_err(context("read_header_chunk: header data length should be 6"))?;
 
     // read header fields
-    let format = read_format(bytes)
-        .map_err(context("read_header: header must specify format"))?;
-    let tracks = read_u16(bytes)
-        .map_err(context("read_header: header must specify tracks"))?;
-    let division = read_u16(bytes)
-        .map_err(context("read_header: header must specify division"))?;
+    let format = read_format(cursor)
+        .map_err(context("read_header_chunk: header must specify format"))?;
+    let tracks = read_u16(cursor)
+        .map_err(context("read_header_chunk: header must specify tracks"))?;
+    let division = read_u16(cursor)
+        .map_err(context("read_header_chunk: header must specify division"))?;
 
-    let header = Header {
+    let header = HeaderChunk {
         format,
         tracks,
         division,
@@ -299,22 +319,68 @@ pub fn read_header(bytes: &mut &[u8]) -> Result<Header, Error> {
     Ok(header)
 }
 
-pub fn read_track<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], Error> {
+/// Low-level [`TrackChunk`] reader.
+///
+/// Reads [`TrackChunk`] and moves the cursor the beginning of the next 
+/// [`TrackChunk`]
+///
+/// # Example
+///
+/// ```
+/// # use midi::{
+/// #   Error, 
+/// #   read::{read_track_chunk, read_header_chunk}
+/// # };
+/// # fn foo(mut bytes: &[u8]) -> Result<(), Error> {
+/// let cursor: &mut &[u8] = &mut bytes;
+/// let header_chunk = read_header_chunk(cursor)?;
+/// for _ in 0..header_chunk.tracks {
+///     let track_chunk = read_track_chunk(cursor)?;
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`TrackChunk`]: struct.TrackChunk.html
+pub fn read_track_chunk<'a>(bytes: &mut &'a [u8]) -> Result<TrackChunk<'a>, Error> {
     // validate chunk type
     expect_bytes(bytes, b"MTrk")
-        .map_err(context("read_track: track type must be 'MTrk'"))?;
+        .map_err(context("read_track_chunk: track type must be 'MTrk'"))?;
 
     // read track len
     let len = read_u32(bytes)
-        .map_err(context("read_track: track must specify len"))?;
+        .map_err(context("read_track_chunk: track must specify len"))?;
 
     // read track data
-    let track_data = read_bytes(bytes, len as usize)
-        .map_err(context("read_track: track must contain event bytes"))?;
+    let data = read_bytes(bytes, len as usize)
+        .map_err(context("read_track_chunk: track must contain event bytes"))?;
 
-    Ok(track_data)
+    let track_chunk = TrackChunk {
+        data,
+    };
+
+    Ok(track_chunk)
 }
 
+/// Low-level [`Event`] reader.
+/// 
+/// Reads [`Event`] and moves the cursor the beginning of the next 
+/// [`Event`]
+///
+/// # Example
+///
+/// ```
+/// # use midi::{Error, read::read_event};
+/// # fn foo(mut bytes: &[u8]) -> Result<(), Error> {
+/// let cursor: &mut &[u8] = &mut bytes;
+/// while !cursor.is_empty() {
+///     let event = read_event(cursor)?;
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`Event`]: ../struct.Event.html
 pub fn read_event<'a>(bytes: &mut &'a [u8]) -> Result<Event<'a>, Error> {
     // read time
     let time = read_vlq(bytes)
@@ -344,24 +410,38 @@ pub fn read_event<'a>(bytes: &mut &'a [u8]) -> Result<Event<'a>, Error> {
     Ok(event)
 }
 
+/// Specifies some basic information about the data in `SMF`.
 #[derive(Debug, Clone, Copy)]
-pub struct Header {
+pub struct HeaderChunk {
     pub format: Format,
     pub tracks: u16,
     pub division: u16,
 }
 
-
+/// Lazy `SMF` reader.
 pub struct SmfReader<'a> {
-    header: Header,
+    header: HeaderChunk,
     // tracks chunks data
     data: &'a [u8],
 }
 
 impl<'a> SmfReader<'a> {
+    /// Creates new [`SmfReader`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use midi::{Error, read::SmfReader};
+    /// # fn foo(data: &[u8]) -> Result<(), Error> {
+    /// let smf_reader = SmfReader::new(data)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`SmfReader`]: struct.SmfReader.html
     pub fn new(mut data: &'a [u8]) -> Result<Self, Error> {
         let cursor = &mut data;
-        let header = read_header(cursor)?;
+        let header = read_header_chunk(cursor)?;
         let reader = Self {
             header,
             data: *cursor,
@@ -369,25 +449,53 @@ impl<'a> SmfReader<'a> {
         Ok(reader)
     }
 
-    pub fn header(&self) -> Header {
+    /// Reads [`HeaderChunk`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use midi::{Error, read::SmfReader};
+    /// # fn foo(data: &[u8]) -> Result<(), Error> {
+    /// # let smf_reader = SmfReader::new(data)?;
+    /// let header_chunk = smf_reader.header_chunk();
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`HeaderChunk`]: struct.HeaderChunk.html
+    pub fn header_chunk(&self) -> HeaderChunk {
         self.header
     }
 
-    pub fn tracks(&self) -> TrackChunks<'a> {
-        TrackChunks {
+    /// Creates iterator over [`TrackChunk`]s.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use midi::{Error, read::SmfReader};
+    /// # fn foo(data: &[u8]) -> Result<(), Error> {
+    /// # let smf_reader = SmfReader::new(data)?;
+    /// let track_chunk = smf_reader.track_chunk_iter();
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`TrackChunk`]: struct.TrackChunk.html
+    pub fn track_chunk_iter(&self) -> impl Iterator<Item = Result<TrackChunk<'a>, Error>> {
+        TrackChunkIter {
             data: self.data,
             tracks: self.header.tracks as usize,
         }
     }
 }
 
-pub struct TrackChunks<'a> {
+struct TrackChunkIter<'a> {
     data: &'a [u8],
     tracks: usize,
 }
 
-impl<'a> Iterator for TrackChunks<'a> {
-    type Item = Result<TrackChunkData<'a>, Error>;
+impl<'a> Iterator for TrackChunkIter<'a> {
+    type Item = Result<TrackChunk<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.tracks == 0 {
@@ -396,25 +504,28 @@ impl<'a> Iterator for TrackChunks<'a> {
 
         self.tracks -= 1;
         let cursor = &mut self.data;
-        let track_data = match read_track(cursor) {
+        let track_chunk = match read_track_chunk(cursor) {
             Ok(track_data) => track_data,
             Err(err) => return Some(Err(err)),
         };
         self.data = *cursor;
 
-        let track_chunk_data = TrackChunkData {
-            data: track_data,
-        };
-
-        Some(Ok(track_chunk_data))
+        Some(Ok(track_chunk))
     }
 }
 
-pub struct TrackChunkData<'a> {
+/// Iterator over [`Event`]s.
+///
+/// Created using [`SmfReader::track_chunk_iter`] method.
+/// 
+/// [`Event`]: ../struct.Event.html
+/// [`SmfReader::track_chunk_iter`]: 
+/// struct.SmfReader.html#method.track_chunk_iter
+pub struct TrackChunk<'a> {
     data: &'a [u8],
 }
 
-impl<'a>Iterator for TrackChunkData<'a> {
+impl<'a>Iterator for TrackChunk<'a> {
     type Item = Result<Event<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {

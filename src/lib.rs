@@ -1,14 +1,17 @@
-//! MIDI streaming library.
+//! Standard Midi File (SMF) parser.
 //!
-//! Normal reading
+//! # Examples
+//!
+//! `DOM` reading using [`Smf`]
+//!
 //! ```
 //! # use midi;
 //! # fn just_read(bytes: &[u8]) -> Result<(), midi::Error> {
 //! let smf = midi::Smf::read(bytes)?;
-//! let _format = smf.format;
-//! let _division = smf.division;
+//! let format = smf.format;
+//! let division = smf.division;
 //! for track in smf.tracks {
-//!     for _event in track.events {
+//!     for event in track.events {
 //!     }
 //! }
 //! # Ok(())
@@ -16,44 +19,51 @@
 //!
 //! ```
 //!
-//! Lazy reading (no heap allocations)
+//! Lazy reading using [`SmfReader`] without heap allocations
+//!
 //! ```
 //! # use midi;
 //! # fn no_allocation_read(bytes: &[u8]) -> Result<(), midi::Error> {
 //! let smf = midi::read::SmfReader::new(bytes)?;
-//! let header = smf.header();
-//! let _format = header.format;
-//! let _division = header.division;
-//! let track_chunks = smf.tracks();
-//! for track_chunk_data in track_chunks {
-//!     let events = track_chunk_data?;
+//! let header = smf.header_chunk();
+//! let format = header.format;
+//! let division = header.division;
+//! let track_chunks = smf.track_chunk_iter();
+//! for track_chunk in track_chunks {
+//!     let events = track_chunk?;
 //!     for event in events {
-//!         let _event = event?;
+//!         let event = event?;
 //!     }
 //! }
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! [Documentation] 
-//!
-//! [Documentation]: http://www.ccarh.org/courses/253/handout/smf/
+//! [`Smf`]: struct.Smf.html
+//! [`SmfReader`]: read/struct.SmfReader.html
 
 pub mod read;
 
+/// `SMF` reader error.
 #[derive(Debug)]
 pub struct Error {
+    /// Error context description.
     pub context: &'static str,
+    /// Type of error.
     pub kind: ErrorKind,
 }
 
+/// [`Error`] type.
+///
+/// [`Error`]: struct.Error.html
 #[derive(Debug)]
 pub enum ErrorKind {
+    /// Non-recoverable.
     Fatal,
+    /// Read data differs from expected data.
     Invalid,
 }
 
-/// MIDI file format
+/// `SMF` format specified in `MThd` chunk
 #[derive(Debug, Clone, Copy)]
 pub enum Format {
     Single,
@@ -61,24 +71,28 @@ pub enum Format {
     MultiSequence,
 }
 
-#[derive(Debug)]
-pub enum MetaType {
-    SequenceNumber,
-    TextEvent,
-}
-
+/// [`Event`] variant.
+///
+/// [`Event`]: struct.Event.html
 #[derive(Debug)]
 pub struct MidiEvent {
     pub channel: u8,
     pub kind: MidiEventKind,
 }
 
+/// [`MidiEventKind::LocalControl`] action.
+///
+/// [`MidiEventKind::LocalControl`]: 
+/// enum.MidiEventKind.html#variant.LocalControl
 #[derive(Debug)]
 pub enum Action {
     Disconnect,
     Reconnect,
 }
 
+/// [`MidiEvent`] variants.
+///
+/// [`MidiEvent`]: struct.MidiEvent.html
 #[derive(Debug)]
 pub enum MidiEventKind {
     NoteOff {
@@ -114,6 +128,9 @@ pub enum MidiEventKind {
     PolyModeOn,
 }
 
+/// [`Event`] variant.
+///
+/// [`Event`]: struct.Event.html
 #[derive(Debug)]
 pub enum MetaEvent<'a> {
     SequenceNumber(u16),
@@ -151,12 +168,18 @@ pub enum MetaEvent<'a> {
     }
 }
 
+/// [`Event`] variant.
+///
+/// [`Event`]: struct.Event.html
 #[derive(Debug)]
 pub enum SysexEvent<'a> {
     F0(&'a [u8]),
     F7(&'a [u8]),
 }
 
+/// [`Event`] variants.
+///
+/// [`Event`]: struct.Event.html
 #[derive(Debug)]
 pub enum EventKind<'a> {
     Midi(MidiEvent),
@@ -164,16 +187,22 @@ pub enum EventKind<'a> {
     Sysex(SysexEvent<'a>),
 }
 
+/// `MTrk` event.
 #[derive(Debug)]
 pub struct Event<'a> {
     pub time: u32,
     pub kind: EventKind<'a>, 
 }
 
+
+/// `MTrk` chunk.
+#[derive(Debug)]
 pub struct Track<'a> {
     pub events: Vec<Event<'a>>,
 }
 
+/// Standard Midi File.
+#[derive(Debug)]
 pub struct Smf<'a> {
     pub format: Format,
     pub tracks: Vec<Track<'a>>,
@@ -183,9 +212,9 @@ pub struct Smf<'a> {
 impl<'a> Smf<'a> {
     pub fn read(data: &'a [u8]) -> Result<Self, Error> {
         let reader = read::SmfReader::new(data)?;
-        let header = reader.header();
+        let header = reader.header_chunk();
         let mut tracks = Vec::with_capacity(header.tracks as usize);
-        let track_chunks = reader.tracks();
+        let track_chunks = reader.track_chunk_iter();
         for track_chunk_data in track_chunks {
             let events = track_chunk_data?;
             let track = Track {
