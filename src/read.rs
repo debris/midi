@@ -321,7 +321,9 @@ pub fn read_header_chunk(cursor: &mut &[u8]) -> Result<HeaderChunk, Error> {
 /// Low-level [`TrackChunk`] reader.
 ///
 /// Reads [`TrackChunk`] and moves the cursor the beginning of the next
-/// [`TrackChunk`]
+/// [`TrackChunk`].
+///
+/// If a chunk type is not `MTrk`, it is ignored and skipped over.
 ///
 /// # Example
 ///
@@ -342,15 +344,24 @@ pub fn read_header_chunk(cursor: &mut &[u8]) -> Result<HeaderChunk, Error> {
 ///
 /// [`TrackChunk`]: struct.TrackChunk.html
 pub fn read_track_chunk<'a>(bytes: &mut &'a [u8]) -> Result<TrackChunk<'a>, Error> {
-    // validate chunk type
-    expect_bytes(bytes, b"MTrk").map_err(context("read_track_chunk: track type must be 'MTrk'"))?;
+    let data = loop {
+        // read chunk type
+        let chunk_type =
+            read_bytes(bytes, 4).map_err(context("read_track_chunk: chunk must specift type"))?;
 
-    // read track len
-    let len = read_u32(bytes).map_err(context("read_track_chunk: track must specify len"))?;
+        // read track len
+        let len = read_u32(bytes).map_err(context("read_track_chunk: chunk must specify len"))?;
 
-    // read track data
-    let data = read_bytes(bytes, len as usize)
-        .map_err(context("read_track_chunk: track must contain event bytes"))?;
+        // read track data
+        let data = read_bytes(bytes, len as usize)
+            .map_err(context("read_track_chunk: track must contain event bytes"))?;
+
+        // The midi specification requires that software be able to handle unexpected chunk-types
+        // by ignoring the entire chunk
+        if chunk_type == b"MTrk" {
+            break data;
+        }
+    };
 
     let track_chunk = TrackChunk { data };
 
