@@ -1,8 +1,8 @@
 //! Low-level `SMF` reading interface.
 
 use crate::{
-    Action, Error, ErrorKind, Event, EventKind, Format, MetaEvent, MidiEvent, MidiEventKind,
-    SysexEvent, Text,
+    Action, Error, ErrorKind, Event, EventKind, Format, Fps, MetaEvent, MidiEvent, MidiEventKind,
+    SysexEvent, Text, Timing,
 };
 use core::convert::TryInto;
 use core::str;
@@ -108,6 +108,28 @@ fn read_vlq(data: &mut &[u8]) -> Result<u32, ErrorKind> {
     Ok(result)
 }
 
+fn read_timing(data: &mut &[u8]) -> Result<Timing, ErrorKind> {
+    let timing = read_u16(data)?;
+    let mask = 0x8000u16;
+    if (timing & mask) == 0 {
+        return Ok(Timing::Metrical(timing & 0x7fff));
+    }
+
+    let fps = match ((timing & 0xff00) >> 8) as i8 {
+        -24 => Fps::Fps24,
+        -25 => Fps::Fps25,
+        -29 => Fps::Fps30Drop,
+        -30 => Fps::Fps30NonDrop,
+        _ => return Err(ErrorKind::Invalid),
+    };
+
+    let subframe = (timing & 0x00ff) as u8;
+
+    let timing = Timing::Timecode { fps, subframe };
+
+    Ok(timing)
+}
+
 fn read_data<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], ErrorKind> {
     let length = read_vlq(data)?;
     read_bytes(data, length as usize)
@@ -190,7 +212,6 @@ fn read_meta_event<'a>(bytes: &mut &'a [u8]) -> Result<MetaEvent<'a>, ErrorKind>
     Ok(meta_event)
 }
 
-// https://www.midi.org/specifications/item/table-1-summary-of-midi-message
 fn read_midi_event(bytes: &mut &[u8], status_byte: u8) -> Result<MidiEvent, ErrorKind> {
     let channel = status_byte & 0x0f;
     let status = status_byte & 0xf0;
@@ -275,13 +296,23 @@ pub fn read_header_chunk(cursor: &mut &[u8]) -> Result<HeaderChunk, Error> {
         read_format(cursor).map_err(context("read_header_chunk: header must specify format"))?;
     let tracks =
         read_u16(cursor).map_err(context("read_header_chunk: header must specify tracks"))?;
-    let division =
-        read_u16(cursor).map_err(context("read_header_chunk: header must specify division"))?;
+
+    if let Format::Single = format {
+        if tracks != 1 {
+            return Err(Error {
+                context: "read_header_chunk: header type 0, can contain on 1 track",
+                kind: ErrorKind::Invalid,
+            });
+        }
+    }
+
+    let timing =
+        read_timing(cursor).map_err(context("read_header_chunk: header must specify timing"))?;
 
     let header = HeaderChunk {
         format,
         tracks,
-        division,
+        timing,
     };
 
     Ok(header)
@@ -380,7 +411,7 @@ pub fn read_event<'a>(bytes: &mut &'a [u8]) -> Result<Event<'a>, Error> {
 pub struct HeaderChunk {
     pub format: Format,
     pub tracks: u16,
-    pub division: u16,
+    pub timing: Timing,
 }
 
 /// Lazy `SMF` reader.
@@ -516,8 +547,11 @@ impl<'a> Iterator for TrackChunk<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_header_chunk, read_u16, read_u24, read_u32, read_u7, read_vlq};
-    use crate::{ErrorKind, Format};
+    use super::{
+        read_header_chunk, read_timing, read_u16, read_u24, read_u32, read_u7, read_vlq,
+        HeaderChunk, Timing,
+    };
+    use crate::{Error, ErrorKind, Format, Fps};
     use core::ops;
 
     fn test_cursor<'a, 'c>(data: &'c mut &'a [u8]) -> TestCursor<'a, 'c> {
@@ -607,6 +641,39 @@ mod tests {
         let header_chunk = read_header_chunk(&mut test_cursor(&mut data)).unwrap();
         assert_eq!(header_chunk.format, Format::MultiTrack);
         assert_eq!(header_chunk.tracks, 3);
-        assert_eq!(header_chunk.division, 1024);
+        assert_eq!(header_chunk.timing, Timing::Metrical(1024));
+    }
+
+    #[test]
+    fn test_read_timing() {
+        fn test(mut data: &[u8]) -> Timing {
+            read_timing(&mut test_cursor(&mut data)).unwrap()
+        }
+
+        assert_eq!(test(&[0x0, 0x60]), Timing::Metrical(96));
+        assert_eq!(
+            test(&[0xe7, 0x28]),
+            Timing::Timecode {
+                fps: Fps::Fps25,
+                subframe: 40,
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_invalid_header_chunk() {
+        fn test(mut data: &[u8]) -> Result<HeaderChunk, Error> {
+            read_header_chunk(&mut data)
+        }
+
+        assert!(
+            test(&[77u8, 84, 104, 100, 0, 0, 0, 5, 0, 1, 0, 3, 4, 0]).is_err(),
+            "invalid header length - 5"
+        );
+
+        assert!(
+            test(&[77u8, 84, 104, 100, 0, 0, 0, 6, 0, 0, 0, 3, 4, 0]).is_err(),
+            "midi file type 0 with invalid number of tracks - 3"
+        );
     }
 }

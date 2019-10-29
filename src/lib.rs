@@ -20,8 +20,18 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Standard documentation:
+//!
+//! - [`csie`]
+//! - [`midi.org`]
+//! - [`somascape.org`]
+//!
 //! [`Smf`]: struct.Smf.html
 //! [`SmfReader`]: read/struct.SmfReader.html
+//! [`csie`]: https://www.csie.ntu.edu.tw/~r92092/ref/midi/
+//! [`midi.org`]: https://www.midi.org/specifications/item/table-1-summary-of-midi-message
+//! [`somascape.org`]: http://www.somascape.org/midi/tech/mfile.html
 
 #![cfg_attr(not(feature = "alloc"), no_std)]
 
@@ -51,12 +61,42 @@ pub enum ErrorKind {
     Invalid,
 }
 
-/// `SMF` format specified in `MThd` chunk
+/// `SMF` format specified in `MThd` chunk.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Format {
     Single,
     MultiTrack,
     MultiSequence,
+}
+
+/// `SMTPE` frames per second. Variant on [`Timing`].
+///
+/// [`Timing`]: enum.Timing.html
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Fps {
+    Fps24,
+    Fps25,
+    Fps30Drop,
+    Fps30NonDrop,
+}
+
+/// `SMF` timing specified in `MThd` chunk.
+///
+/// With metrical timing, the timing interval is tempo related, whereas with timecode the timing
+/// interval is in absolute time, and hence not related to tempo.
+///
+/// A timing resolution of 1 ms can be achieved by specifying 25 fps and 40 sub-frames, which would
+/// be encoded in hex as  E7 28.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Timing {
+    /// Specifies number of sub-visions of a querter note (aka pulses per quarter note, ppqn)
+    Metrical(u16),
+    Timecode {
+        /// Specifies the number of frames per second.
+        fps: Fps,
+        /// Number of sub-divisions of a frame
+        subframe: u8,
+    },
 }
 
 /// [`Event`] variant.

@@ -1,7 +1,7 @@
 /// Crate options behind `alloc` feature.
 extern crate alloc;
 
-use crate::{read, Error, Event, Format};
+use crate::{read, Error, Event, Format, Timing};
 use alloc::vec::Vec;
 
 /// `MTrk` chunk.
@@ -18,8 +18,6 @@ pub struct Track<'a> {
 /// # use midi;
 /// # fn just_read(bytes: &[u8]) -> Result<(), midi::Error> {
 /// let smf = midi::Smf::read(bytes)?;
-/// let format = smf.format;
-/// let division = smf.division;
 /// for track in smf.tracks {
 ///     for event in track.events {
 ///     }
@@ -32,7 +30,7 @@ pub struct Track<'a> {
 pub struct Smf<'a> {
     pub format: Format,
     pub tracks: Vec<Track<'a>>,
-    pub division: u16,
+    pub timing: Timing,
 }
 
 impl<'a> Smf<'a> {
@@ -52,7 +50,7 @@ impl<'a> Smf<'a> {
         let smf = Smf {
             format: header.format,
             tracks,
-            division: header.division,
+            timing: header.timing,
         };
 
         Ok(smf)
