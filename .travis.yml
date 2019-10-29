@@ -1,0 +1,30 @@
+language: rust
+services: docker
+sudo: required
+
+branches:
+  only:
+  - master
+
+matrix:
+  fast_finish: false
+  include:
+    - env: TARGET=i686-unknown-linux-gnu
+      rust: stable
+    - env: TARGET=x86_64-unknown-linux-gnu
+      rust: stable
+    - env: TARGET=x86_64-unknown-linux-gnu
+      rust: nightly
+    - env: TARGET=powerpc-unknown-linux-gnu
+      rust: stable
+    - env: TARGET=powerpc64-unknown-linux-gnu
+      rust: stable
+
+install:
+  - cargo install cross --force
+  - source ~/.cargo/env || true
+
+script:
+  - cross test --all-features --verbose --all --release --target $TARGET
+
+cache: cargo
