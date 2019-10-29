@@ -1,23 +1,8 @@
 //! Standard Midi File (SMF) parser.
 //!
-//! # Examples
+//! If you want to parse the entire SMF at once, take a look at [`Smf`] struct.
 //!
-//! `DOM` like reading using [`Smf`]
-//!
-//! ```ignore
-//! # use midi;
-//! # fn just_read(bytes: &[u8]) -> Result<(), midi::Error> {
-//! let smf = midi::Smf::read(bytes)?;
-//! let format = smf.format;
-//! let division = smf.division;
-//! for track in smf.tracks {
-//!     for event in track.events {
-//!     }
-//! }
-//! # Ok(())
-//! # }
-//!
-//! ```
+//! # Example
 //!
 //! Lazy reading using [`SmfReader`] without heap allocations
 //!
@@ -25,9 +10,6 @@
 //! # use midi;
 //! # fn no_allocation_read(bytes: &[u8]) -> Result<(), midi::Error> {
 //! let smf = midi::read::SmfReader::new(bytes)?;
-//! let header = smf.header_chunk();
-//! let format = header.format;
-//! let division = header.division;
 //! let track_chunks = smf.track_chunk_iter();
 //! for track_chunk in track_chunks {
 //!     let events = track_chunk?;
@@ -41,11 +23,12 @@
 //! [`Smf`]: struct.Smf.html
 //! [`SmfReader`]: read/struct.SmfReader.html
 
-#![no_std]
+#![cfg_attr(not(feature = "alloc"), no_std)]
 
 pub mod read;
 mod features;
 
+use core::str;
 pub use features::*;
 
 /// `SMF` reader error.
@@ -69,7 +52,7 @@ pub enum ErrorKind {
 }
 
 /// `SMF` format specified in `MThd` chunk
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Format {
     Single,
     MultiTrack,
@@ -139,13 +122,13 @@ pub enum MidiEventKind {
 #[derive(Debug)]
 pub enum MetaEvent<'a> {
     SequenceNumber(u16),
-    Text(&'a str),
-    CopyrightNotice(&'a str),
-    Name(&'a str),
-    InstrumentName(&'a str),
-    Lyric(&'a str),
-    Marker(&'a str),
-    CuePoint(&'a str),
+    Text(Text<'a>),
+    CopyrightNotice(Text<'a>),
+    Name(Text<'a>),
+    InstrumentName(Text<'a>),
+    Lyric(Text<'a>),
+    Marker(Text<'a>),
+    CuePoint(Text<'a>),
     ChannelPrefix(u8),
     EndOfTrack,
     SetTempo(u32),
@@ -197,4 +180,33 @@ pub enum EventKind<'a> {
 pub struct Event<'a> {
     pub time: u32,
     pub kind: EventKind<'a>, 
+}
+
+/// [`MetaEvent`] text
+///
+/// [`MetaEvent`]: enum.MetaEvent.html
+#[derive(Debug)]
+pub struct Text<'a> {
+    data: &'a [u8],
+}
+
+impl<'a> Text<'a> {
+    /// Creates new [`Text`].
+    ///
+    /// [`Text`]: struct.Text.html
+    pub fn new(data: &'a [u8]) -> Self {
+        Text {
+            data,
+        }
+    }
+    
+    /// Try to decode text as utf8.
+    pub fn as_utf8(&self) -> Result<&'a str, str::Utf8Error> {
+        str::from_utf8(self.data)
+    }
+    
+    /// Returns text slice.
+    pub fn raw(&self) -> &'a [u8] {
+        self.data
+    }
 }

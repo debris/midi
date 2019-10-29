@@ -3,7 +3,7 @@
 use core::convert::TryInto;
 use core::str;
 use crate::{
-    SysexEvent, Error, ErrorKind, Format, Event, EventKind, 
+    SysexEvent, Error, ErrorKind, Format, Event, EventKind, Text,
     MetaEvent, Action, MidiEvent, MidiEventKind,
 };
 
@@ -120,9 +120,8 @@ fn read_data<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], ErrorKind> {
     read_bytes(data, length as usize)
 }
 
-fn read_text<'a>(data: &mut &'a [u8]) -> Result<&'a str, ErrorKind> {
-    let text_data = read_data(data)?;
-    str::from_utf8(text_data).map_err(|_| ErrorKind::Invalid)
+fn read_text<'a>(data: &mut &'a [u8]) -> Result<Text<'a>, ErrorKind> {
+    read_data(data).map(Text::new)
 }
 
 fn read_action(data: &mut &[u8])-> Result<Action, ErrorKind> {
@@ -499,7 +498,13 @@ impl<'a> Iterator for TrackChunkIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.tracks == 0 {
-            return None
+            if self.data.is_empty() {
+                return None
+            }
+            return Some(Err(Error {
+                context: "TrackChunkIter::next: undread data left",
+                kind: ErrorKind::Invalid,
+            }))
         }
 
         self.tracks -= 1;
@@ -545,7 +550,8 @@ impl<'a>Iterator for TrackChunk<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_vlq, read_u32};
+    use crate::Format;
+    use super::{read_vlq, read_u32, read_header_chunk};
 
     #[test]
     fn test_read_vlq() {
@@ -567,5 +573,16 @@ mod tests {
         }
 
         assert_eq!(read_u32_u(&[0, 0, 0, 6]), 6);
+    }
+
+    #[test]
+    fn test_read_header_chunk() {
+        let data = [77u8, 84, 104, 100, 0, 0, 0, 6, 0, 1, 0, 3, 4, 0];
+        let cursor = &mut (&data as &[u8]);
+        let header_chunk = read_header_chunk(cursor).unwrap();
+        assert!(cursor.is_empty());
+        assert_eq!(header_chunk.format, Format::MultiTrack);
+        assert_eq!(header_chunk.tracks, 3);
+        assert_eq!(header_chunk.division, 1024);
     }
 }

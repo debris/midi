@@ -1,4 +1,4 @@
-//! Crate options behind `alloc` feature.
+/// Crate options behind `alloc` feature.
 
 extern crate alloc;
 
@@ -12,6 +12,23 @@ pub struct Track<'a> {
 }
 
 /// Standard Midi File.
+///
+/// # Example
+///
+/// ```
+/// # use midi;
+/// # fn just_read(bytes: &[u8]) -> Result<(), midi::Error> {
+/// let smf = midi::Smf::read(bytes)?;
+/// let format = smf.format;
+/// let division = smf.division;
+/// for track in smf.tracks {
+///     for event in track.events {
+///     }
+/// }
+/// # Ok(())
+/// # }
+///
+/// ```
 #[derive(Debug)]
 pub struct Smf<'a> {
     pub format: Format,
